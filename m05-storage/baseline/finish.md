@@ -1,6 +1,8 @@
 # Done
 
-You walked the storage chain end to end: a volume as a plain directory, an `emptyDir` that died with its Pod, a Bound claim and the volume a class provisioned for it, the `claimRef` that binds the two, the `WaitForFirstConsumer` binding that holds a consumer-less claim Pending on purpose, an expansion the class refused, an RWO volume pinned to one node, data that survived a Pod delete, and the `get pvc` triage. That is the shape of healthy. Internalize it, so each broken link stands out.
+You walked the storage chain end to end. A volume is a plain directory, and the `emptyDir` you made died with its Pod. The `cdr-data` claim is Bound to a volume its class provisioned, and a `claimRef` binds the two. `WaitForFirstConsumer` held a consumer-less claim Pending on purpose. The class refused an expansion, because it does not set `allowVolumeExpansion`. An RWO volume stayed pinned to one node, and the data survived a Pod delete.
+
+That is the shape of healthy. Internalize it, so each broken link stands out.
 
 **Next:**
 
