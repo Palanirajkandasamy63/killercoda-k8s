@@ -1,33 +1,54 @@
-# Step 4 — The get pvc triage
+# Step 4 — Access modes, and data that outlives the Pod
 
-When a Pod is stuck on storage, it sits in `Pending` or `ContainerCreating` and never logs anything — the problem is in a claim or a volume the Pod never names in its own events. One command is the first look, and it splits the failure three ways.
+The access mode declares how many places may mount a volume at once. Read it, then prove the data survives the Pod that wrote it.
 
-## The first-look command
+## Read the access mode
 
 ```bash
-kubectl get pvc -A
+kubectl get pv
 ```{{exec}}
 
-For every PVC-backed workload, the `STATUS` column is the diagnosis. Three outcomes, three different problems:
+The `ACCESS MODES` column reads RWO. There are four modes, and three of them count nodes:
 
-- **`Bound`** — the claim has its volume. Storage is fine; if the Pod is stuck, look elsewhere (or at attach — see below).
-- **`Pending`** — the claim can't get a volume. Bad or missing StorageClass, or no matching PV. (Unless no Pod is using it yet — then it's healthy `WaitForFirstConsumer`.)
-- **the claim you expected isn't listed** — the Pod names a `claimName` that doesn't exist in this namespace. A typo, or the claim is in another namespace.
+- **ReadWriteOnce (RWO)** — read-write by a single node. Several Pods on that one node may all read and write it.
+- **ReadOnlyMany (ROX)** — read-only by many nodes.
+- **ReadWriteMany (RWX)** — read-write by many nodes.
+- **ReadWriteOncePod (RWOP)** — read-write by a single Pod, anywhere in the cluster.
 
-That's the whole differential. `kubectl get pvc` is to storage what `kubectl get endpoints` was to Services in M04: the Pod's status says it's stuck; the claim says why.
+So "Once" means one node, not one Pod. Only RWOP counts Pods. Break/fix 03 and 04 turn on that difference.
 
-## See the chain from the Pod's side
+## See where the volume lives
+
+```bash
+PV=$(kubectl get pvc cdr-data -n cdr-storage -o jsonpath='{.spec.volumeName}')
+kubectl describe pv "$PV"
+```{{exec}}
+
+Read two parts. `Node Affinity:` pins this volume to the node that holds the directory, because `local-path` storage is a path on one machine's disk. `Status: Bound` and `Claim: cdr-storage/cdr-data` confirm the binding. The volume is not floating in the cluster: it lives on one node, and any Pod that mounts it must run there.
+
+## Write data, then destroy the Pod
+
+`cdr-writer` mounts `cdr-data` at /data. Write a record:
 
 ```bash
 POD=$(kubectl get pods -n cdr-storage -l app=cdr-writer -o jsonpath='{.items[0].metadata.name}')
-kubectl describe pod "$POD" -n cdr-storage | grep -A4 'Volumes:'
+kubectl exec -n cdr-storage "$POD" -- sh -c 'echo "cdr-2026-07-01-000042" > /data/record && cat /data/record'
 ```{{exec}}
 
-The `Volumes:` section shows the Pod mounting a volume whose type is `PersistentVolumeClaim` with `ClaimName: cdr-data`. That `ClaimName` is the only storage reference the Pod holds — everything else (the PV, the class, the disk) hangs off the claim. Follow it:
+Delete the Pod. The Deployment creates a replacement:
 
 ```bash
-kubectl get pvc cdr-data -n cdr-storage        # Bound → a PV
-kubectl get pv                                  # the PV, CLAIM = cdr-storage/cdr-data
+kubectl delete pod -n cdr-storage "$POD"
+kubectl wait --for=condition=Ready pod -l app=cdr-writer -n cdr-storage --timeout=60s
 ```{{exec}}
 
-Pod → `claimName` → PVC → StorageClass → PV → a directory on a node. That's the healthy chain, and every break/fix in this module snaps exactly one link. Internalize `get pvc` as the reflex — see `finish.md` for what's next.
+## Confirm the data survived
+
+```bash
+NEWPOD=$(kubectl get pods -n cdr-storage -l app=cdr-writer -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -n cdr-storage "$NEWPOD" -- cat /data/record
+```{{exec}}
+
+The record is still there: a different Pod, the same volume. The container filesystem went with the old Pod, and so would an `emptyDir` (step 1). The claim's data did not, because it lives in the volume. That is the whole reason PersistentVolumes exist.
+
+Next: the one command that diagnoses this chain when it breaks.

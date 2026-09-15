@@ -1,14 +1,17 @@
 # M05 — Baseline Tour
 
-A container's own filesystem is ephemeral: restart it and it reverts to the image, delete the Pod and everything it wrote is gone. That's fine for stateless services, but Polyphone runs stateful ones — `cdr-writer` persisting Call Detail Records, `directory` holding its address book, the StatefulSets keeping per-instance state. For those, the data has to outlive the Pod. The **PersistentVolume / PersistentVolumeClaim** model is how Kubernetes delivers durable storage that survives the Pod's disposable lifecycle.
+A container's filesystem is ephemeral. Restart the container and it reverts to the image. Delete the Pod and everything it wrote is gone. That is correct for a stateless service, and wrong for a stateful one. Polyphone runs both: `cdr-writer` persists Call Detail Records, `directory` holds an address book, and the StatefulSets keep per-instance state. Their data must outlive the Pod.
 
-This tour runs on the full Polyphone fleet — no new workloads. You'll inspect the PVC-backed workloads it already runs, all using the cluster's `local-path` StorageClass (a dynamic, `WaitForFirstConsumer`, ReadWriteOnce, `Delete`-policy provisioner).
+This tour starts at the general idea — a volume is a directory the containers in a Pod can reach — then walks the durable path: **PersistentVolumeClaim**, **PersistentVolume**, and the **StorageClass** that provisions one to satisfy the other.
 
-Four short steps walk the storage chain:
+It runs on the full Polyphone fleet, with no new workloads. Every claim uses the cluster's `local-path` StorageClass: dynamic, `WaitForFirstConsumer`, ReadWriteOnce, `Delete` policy.
 
-1. **A claim, a volume, a class** — a `Bound` PVC, the PV a StorageClass provisioned for it, and how they relate
-2. **Dynamic provisioning & WaitForFirstConsumer** — how a claim gets a volume on demand, and the healthy `Pending` that isn't a bug
-3. **Access modes & data that persists** — RWO, where the volume lives, and data surviving a Pod delete
-4. **The get pvc triage** — the one command that splits every storage-stuck Pod, and the whole chain in one view
+Five short steps:
 
-Nothing to fix here. See what healthy durable storage looks like before the break/fix scenarios snap each link. The cluster takes 90–150 seconds to come up. Click **Start** when ready.
+1. **A volume is a directory** — `.spec.volumes` and `volumeMounts`, and an emptyDir that dies with its Pod
+2. **A claim, a volume, a class** — a Bound claim, the volume it bound to, and the claimRef that links them
+3. **The class recipe, and a healthy Pending** — provisioner, reclaim policy, binding mode, expansion
+4. **Access modes, and data that outlives the Pod** — the four modes, and persistence across a Pod delete
+5. **The get pvc triage** — the one command that splits every storage-stuck Pod
+
+Nothing is broken here. See what healthy storage looks like before the scenarios snap each link. The cluster takes 90–150 seconds to come up. Click **Start** when ready.

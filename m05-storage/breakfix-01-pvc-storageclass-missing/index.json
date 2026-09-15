@@ -1,6 +1,6 @@
 {
-  "title": "M05 — Break/fix 01: PVC Won't Bind (Missing StorageClass)",
-  "description": "cdr-writer is stuck Pending and never starts. Its PVC is Pending too — it names a StorageClass that doesn't exist, so no volume is ever provisioned. Find it with get pvc / describe pvc and fix the class.",
+  "title": "M05 — Break/fix 01: A Claim That Never Binds",
+  "description": "cdr-writer is stuck Pending and never starts. Its claim is Pending too, because it names a StorageClass that does not exist, so no volume is ever provisioned. Find it with get pvc and describe pvc, then repair the class.",
   "details": {
     "intro": {
       "text": "intro.md",
@@ -8,7 +8,7 @@
       "foreground": "foreground.sh"
     },
     "steps": [
-      { "title": "Diagnose the unbound PVC", "text": "step1/text.md" },
+      { "title": "Diagnose the unbound claim", "text": "step1/text.md" },
       { "title": "Fix it and verify", "text": "step2/text.md", "verify": "step2/verify.sh" }
     ],
     "finish": { "text": "finish.md" }

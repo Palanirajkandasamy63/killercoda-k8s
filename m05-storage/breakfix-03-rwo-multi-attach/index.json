@@ -1,6 +1,6 @@
 {
-  "title": "M05 — Break/fix 03: RWO Volume Can't Span Two Nodes",
-  "description": "directory was scaled to 2 replicas sharing one ReadWriteOnce PVC. The claim is Bound, yet one replica is stuck — an RWO volume can't be attached on a second node. Read the Bound-but-stuck signature and fix the access-mode mismatch.",
+  "title": "M05 — Break/fix 03: An RWO Volume Cannot Serve Two Nodes",
+  "description": "directory was scaled to 2 replicas sharing one ReadWriteOnce claim. The claim is Bound, and one replica is stuck, because an RWO volume cannot be attached on a second node. Read the Bound-but-stuck signature and match the access mode to the workload.",
   "details": {
     "intro": {
       "text": "intro.md",

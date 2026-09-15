@@ -1,15 +1,17 @@
 # Done
 
-`directory` had a `Bound` claim and a Pod that still wouldn't start — the third leaf of the differential, and the one that trips people, because `get pvc` looks perfect. A single `ReadWriteOnce` volume was asked to back two replicas on two nodes, and RWO means one node at a time: the second replica hit a `volume node affinity conflict` (the local-volume form of a Multi-Attach error). The fix was to stop spanning nodes — one RWO consumer — with RWX or `volumeClaimTemplates` as the real answer when you genuinely need more.
+`directory` had a Bound claim and a Pod that still would not start — the third leaf, and the one that trips people, because `get pvc` looks perfect. A single `ReadWriteOnce` volume was asked to back two replicas on two nodes, and RWO means one node at a time. The second replica hit a `volume node affinity conflict`, which is the local-volume form of a Multi-Attach error. The fix was to stop spanning nodes.
 
-That completes the storage triage. `get pvc` splits every storage-stuck Pod three ways:
+That leaf has a second form, narrower than this one. `ReadWriteOnce` counts nodes, so two Pods on *one* node share the volume happily. `ReadWriteOncePod` counts Pods, and refuses the second Pod anywhere. Break/fix 04 is that case.
 
-- **`Pending`** → the claim can't bind (break/fix 01 — bad StorageClass).
-- **absent** → the Pod names a claim that doesn't exist (break/fix 02).
-- **`Bound`, Pod still stuck** → the volume can't attach where the Pod runs (this one — access mode / topology).
+`kubectl get pvc` splits every storage-stuck Pod three ways:
+
+- **Pending** → the claim cannot bind (break/fix 01 — a class that does not exist).
+- **absent** → the Pod names a claim that does not exist (break/fix 02).
+- **Bound, Pod still stuck** → the volume refuses that consumer (this one, and break/fix 04).
 
 **Next:**
 
 - Check your path against [`ANSWER-KEY.md`](../ANSWER-KEY.md).
-- For the *why*, see [`LESSON.md`](../LESSON.md) § Access modes, attach, and the Multi-Attach failure.
-- You've completed M05's break/fix set. Revisit `LESSON.md` § Production thinking, then move on to M06 — Scheduling.
+- For the *why*, see [`LESSON.md`](../LESSON.md) § Access modes, attach, and exclusivity.
+- Next scenario: **`breakfix-04-rwop-single-pod`** — a Bound claim, both Pods on one node, and one still refused.

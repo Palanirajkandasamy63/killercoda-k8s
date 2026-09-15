@@ -1,6 +1,6 @@
 {
-  "title": "M05 — Storage: PersistentVolumes, Claims & StorageClasses — Baseline",
-  "description": "Tour durable storage working end to end: a Bound PVC and the PV a StorageClass provisioned for it, WaitForFirstConsumer binding, data that survives a Pod delete, and the get pvc triage.",
+  "title": "M05 — Storage: Volumes, PersistentVolumes, Claims & StorageClasses — Baseline",
+  "description": "Tour storage working end to end: an emptyDir that dies with its Pod, a Bound claim and the volume a StorageClass provisioned for it, WaitForFirstConsumer binding, access modes, data that survives a Pod delete, and the get pvc triage.",
   "details": {
     "intro": {
       "text": "intro.md",
@@ -8,10 +8,11 @@
       "foreground": "foreground.sh"
     },
     "steps": [
-      { "title": "A claim, a volume, a class", "text": "step1/text.md", "verify": "step1/verify.sh" },
-      { "title": "Dynamic provisioning & WaitForFirstConsumer", "text": "step2/text.md", "verify": "step2/verify.sh" },
-      { "title": "Access modes & data that persists", "text": "step3/text.md", "verify": "step3/verify.sh" },
-      { "title": "The get pvc triage", "text": "step4/text.md", "verify": "step4/verify.sh" }
+      { "title": "A volume is a directory", "text": "step1/text.md", "verify": "step1/verify.sh" },
+      { "title": "A claim, a volume, a class", "text": "step2/text.md", "verify": "step2/verify.sh" },
+      { "title": "The class recipe, and a healthy Pending", "text": "step3/text.md", "verify": "step3/verify.sh" },
+      { "title": "Access modes, and data that outlives the Pod", "text": "step4/text.md", "verify": "step4/verify.sh" },
+      { "title": "The get pvc triage", "text": "step5/text.md", "verify": "step5/verify.sh" }
     ],
     "finish": { "text": "finish.md" }
   },

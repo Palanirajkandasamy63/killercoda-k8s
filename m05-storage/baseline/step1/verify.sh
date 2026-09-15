@@ -1,11 +1,15 @@
 #!/bin/bash
-# Checks: cdr-data PVC is Bound to a PV via the local-path class, so the learner
-# has a healthy claim to read. Defensive baseline check.
-STATUS=$(kubectl get pvc cdr-data -n cdr-storage -o jsonpath='{.status.phase}' 2>/dev/null)
-if [ "$STATUS" != "Bound" ]; then
-  echo "cdr-data is not Bound yet (status '$STATUS'). The fleet may still be coming up — wait and retry." >&2
+# Checks: cdr-writer's Pod provides its storage through a PersistentVolumeClaim
+# volume, so the learner has a real volumes block to read. Defensive baseline check.
+POD=$(kubectl get pods -n cdr-storage -l app=cdr-writer -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+if [ -z "$POD" ]; then
+  echo "No cdr-writer Pod yet. The fleet may still be coming up — wait and retry." >&2
   exit 1
 fi
-VOL=$(kubectl get pvc cdr-data -n cdr-storage -o jsonpath='{.spec.volumeName}' 2>/dev/null)
-echo "✓ cdr-data is Bound to PV $VOL (via StorageClass local-path)"
+CLAIM=$(kubectl get pod "$POD" -n cdr-storage -o jsonpath='{.spec.volumes[?(@.persistentVolumeClaim)].persistentVolumeClaim.claimName}' 2>/dev/null)
+if [ -z "$CLAIM" ]; then
+  echo "cdr-writer's Pod has no persistentVolumeClaim volume. Wait for the fleet to finish coming up and retry." >&2
+  exit 1
+fi
+echo "✓ cdr-writer mounts a PersistentVolumeClaim volume (ClaimName: $CLAIM)"
 exit 0

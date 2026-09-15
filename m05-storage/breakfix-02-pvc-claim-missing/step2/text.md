@@ -1,6 +1,6 @@
 # Step 2 — Fix it and verify
 
-The claim `directory-data` exists (waiting for a consumer); the Deployment just names the wrong one (`directory-store`). Point the Pod template's `claimName` at the claim that's actually there. Unlike a PVC's `storageClassName`, a Pod's `claimName` is freely mutable — you edit the Deployment and it rolls a new Pod.
+`directory-data` exists and waits for a consumer. The Deployment names `directory-store`, which does not. Point the Pod template's `claimName` at the claim that is there. A Pod's `claimName` is freely mutable, unlike a claim's own `storageClassName`, so editing the Deployment rolls a new Pod.
 
 ## Correct the claimName
 
@@ -15,20 +15,21 @@ Or by hand:
 kubectl edit deployment directory -n app-services
 # under volumes: → persistentVolumeClaim:
 # change  claimName: directory-store
-# to      claimName: directory-data   (the claim that actually exists)
+# to      claimName: directory-data
 ```
 
-Editing the Pod template triggers a rollout: the old `Pending` Pod is replaced by one that mounts `directory-data`. Now that a Pod is finally consuming it, `WaitForFirstConsumer` binds the claim, and the Pod schedules and starts.
+Editing the Pod template triggers a rollout. The Pending Pod is replaced by one that mounts `directory-data`. A Pod now consumes that claim, so `WaitForFirstConsumer` binds it, and the Pod schedules and starts.
 
-(The mirror-image fix is valid too — if the *claim* were the thing misnamed and the Pod were right, you'd create or rename the PVC instead. Fix whichever side is wrong; here the Pod named a claim that never existed.)
+The mirror-image fix is equally valid. If the *claim* were misnamed and the Pod were right, you would create or rename the claim instead. Repair whichever side is wrong. Here the Pod named a claim that never existed.
 
 ## Verify
 
 ```bash
 kubectl wait --for=condition=Ready pod -l app=directory -n app-services --timeout=60s
 kubectl get pods -n app-services -l app=directory
-kubectl get deploy directory -n app-services \
-  -o jsonpath='{.spec.template.spec.volumes[0].persistentVolumeClaim.claimName}'; echo
+kubectl get pvc -n app-services
 ```{{exec}}
 
-The `directory` Pod is `Running` and `Ready`; `directory-data` is now `Bound` (a Pod finally consumed it), and the Deployment mounts the claim that existed all along. The volume never changed; only the name the Pod used did. For self-grading and the full differential, see [`ANSWER-KEY.md`](../ANSWER-KEY.md). You're done — see `finish.md`.
+The `directory` Pod is Running and Ready, and `directory-data` is Bound now that a Pod consumes it. The volume never changed. Only the name the Pod used did.
+
+For self-grading and the full differential, see [`ANSWER-KEY.md`](../ANSWER-KEY.md). You are done — see `finish.md`.

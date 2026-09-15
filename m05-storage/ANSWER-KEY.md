@@ -1,64 +1,68 @@
-# M05 — Storage: PersistentVolumes, Claims & StorageClasses — Answer Key
+# M05 — Storage: Volumes, PersistentVolumes, Claims & StorageClasses — Answer Key
 
-> Self-grading reference. Try each scenario first, then come back here to check your diagnostic path against the canonical one. Instructors running the lab live can use the same sections as a teaching script.
-> Environment: Killercoda `kubernetes-kubeadm-2nodes` with the Polyphone baseline. No new workloads — the scenarios mutate the fleet's existing PVC-backed workloads (`cdr-writer`, `directory`). The class throughout is `local-path` (dynamic, `WaitForFirstConsumer`, RWO, `Delete`-policy).
+> Self-grading reference. Work each scenario first, then check your diagnostic path against the canonical one. An instructor running the lab live can use the same sections as a teaching script.
+> Environment: Killercoda `kubernetes-kubeadm-2nodes` with the Polyphone baseline. No new workloads — the scenarios mutate the fleet's existing claim-backed workloads, `cdr-writer` and `directory`. The class throughout is `local-path`: dynamic, `WaitForFirstConsumer`, RWO, `Delete` policy, no volume expansion.
 
 ## Lesson summary
 
-M05 is about durable storage: how a Pod gets a volume that outlives it, and the three places a Pod stops before it ever runs. The `baseline/` scenario tours healthy mechanics — a `Bound` PVC and the PV a StorageClass provisioned, `WaitForFirstConsumer` binding, data surviving a Pod delete, and the `get pvc` triage. The three break/fix scenarios walk the storage differential top to bottom, one `get pvc` signature each:
+M05 is about storage that outlives the Pod, and the places a Pod stops before it ever runs. The `baseline/` scenario tours healthy mechanics: a volume as a plain directory, an `emptyDir` that dies with its Pod, a Bound claim and the volume a class provisioned for it, the `claimRef` binding the two, `WaitForFirstConsumer` holding a healthy claim Pending, a refused expansion, data surviving a Pod delete, and the `get pvc` triage.
 
-- `breakfix-01-pvc-storageclass-missing` — **claim `Pending`**: the claim can't bind because its StorageClass doesn't exist
-- `breakfix-02-pvc-claim-missing` — **claim absent**: the Pod names a `claimName` that was never created
-- `breakfix-03-rwo-multi-attach` — **claim `Bound`, Pod still stuck**: an RWO volume asked to back Pods on two nodes
+The four break/fix scenarios walk the storage differential top to bottom, one `get pvc` signature each:
 
-The single through-line: **a Pod stuck on storage is a claim that isn't delivering its volume — run `kubectl get pvc` first and read the claim, not the Pod.** The claim's state (`Pending` / absent / `Bound`) is the whole differential; the Pod's `Pending` only tells you it's stuck.
+- `breakfix-01-pvc-storageclass-missing` — **claim Pending**: it cannot bind, because its StorageClass does not exist
+- `breakfix-02-pvc-claim-missing` — **claim absent**: the Pod names a claim that was never created
+- `breakfix-03-rwo-multi-attach` — **claim Bound, Pod stuck**: an RWO volume asked to serve two nodes
+- `breakfix-04-rwop-single-pod` — **claim Bound, Pod stuck**: an RWOP volume asked to serve two Pods on one node
+
+The through-line: **a Pod stuck on storage is a claim that is not delivering its volume. Run `kubectl get pvc` first, and read the claim rather than the Pod.** The claim's state — Pending, absent, or Bound — is the whole differential. The Pod's Pending only says it is stuck.
 
 ## Baseline tour reference
 
 No broken state. Expected output per step:
 
-- **Step 1 (a claim, a volume, a class):** `kubectl get pvc -A` shows the fleet's claims `Bound`. `describe pvc cdr-data -n cdr-storage` shows `Status: Bound`, `Capacity: 1Gi`, `Access Modes: RWO`, `StorageClass: local-path`, and the `Volume:` (PV) it bound to. `kubectl get pv` shows that PV with `CLAIM: cdr-storage/cdr-data`. `kubectl get storageclass` shows one class, `local-path`. Teaching point: PVC = request, PV = volume, SC = the recipe that provisioned it; the Pod names only the claim.
-- **Step 2 (dynamic provisioning & WaitForFirstConsumer):** `get storageclass local-path -o yaml` shows `provisioner: rancher.io/local-path`, `reclaimPolicy: Delete`, `volumeBindingMode: WaitForFirstConsumer`. A freshly-created PVC with no consumer sits `Pending` with event `waiting for first consumer to be created before binding` — **healthy, not broken**. Teaching point: `Pending` means "broken" only once a Pod is using the claim and it still won't bind.
-- **Step 3 (access modes & persistence):** `get pv` shows `ACCESS MODES: RWO`; `describe pv` shows the PV's node affinity pinning it to one node. Writing a file into `cdr-writer`'s `/data`, deleting the Pod, and reading it from the replacement Pod shows the data survived — it lives in the PV, not the Pod.
-- **Step 4 (the get pvc triage):** `kubectl get pvc -A` is the first look; `STATUS` splits every storage-stuck Pod into `Bound` / `Pending` / absent. `describe pod` shows the Pod's `Volumes:` referencing the claim by `ClaimName` — the only storage reference the Pod holds.
+- **Step 1 (a volume is a directory):** `describe pod` on `cdr-writer` shows a `Volumes:` block whose `data` volume has `Type: PersistentVolumeClaim` and `ClaimName: cdr-data`. The two-container demo Pod proves that one `emptyDir` mounted at two paths is one directory, and that deleting the Pod destroys it. Teaching point: `.spec.volumes` provides, `volumeMounts` places, and only a claim survives its Pod.
+- **Step 2 (a claim, a volume, a class):** `get pvc -A` shows the fleet's claims Bound. `describe pvc cdr-data` shows `Status: Bound`, `Capacity: 1Gi`, `Access Modes: RWO`, `StorageClass: local-path`, and the `Volume:` it bound to. The claim's `spec.volumeName` and the volume's `claimRef` are the two halves of one bi-directional binding, printed by `get pv` as `CLAIM: cdr-storage/cdr-data`.
+- **Step 3 (the class recipe, and a healthy Pending):** `describe storageclass local-path` shows `Provisioner: rancher.io/local-path`, `ReclaimPolicy: Delete`, `VolumeBindingMode: WaitForFirstConsumer`, `AllowVolumeExpansion: <unset>`. A size patch is refused, because the class does not permit growth. A claim with no consumer sits Pending with `waiting for first consumer to be created before binding` — healthy, not broken.
+- **Step 4 (access modes, and data that outlives the Pod):** `get pv` shows `ACCESS MODES: RWO`, and `describe pv` shows the node affinity pinning the volume to one node. Writing a file into `cdr-writer`'s /data, deleting the Pod, and reading it from the replacement proves the data lives in the volume, not the Pod.
+- **Step 5 (the get pvc triage):** `get pvc -A` is the first look, and `STATUS` splits every storage-stuck Pod into Bound, Pending, or absent. `describe pod` shows the Pod's only storage reference, its `ClaimName`. The class's `reclaimPolicy: Delete` is what makes a claim deletion destructive.
 
 ---
 
-## Break/fix 01 — PVC won't bind (missing StorageClass)
+## Break/fix 01 — A claim that never binds (missing StorageClass)
 
-**Symptom:** `cdr-writer` in `cdr-storage` is stuck `Pending` from cluster start, with no logs and nothing crashing. Its container never ran — it's waiting on storage.
+**Symptom:** `cdr-writer` in `cdr-storage` is Pending from cluster start, with no logs and nothing crashing. Its container never ran. It is waiting on storage.
 
-**Root cause:** The `cdr-data` PVC sets `storageClassName: fast-ssd`, and no such class exists on the cluster. With no StorageClass there is no provisioner to call, so no PV is ever created and the claim stays `Pending` forever<sup><a href="https://kubernetes.io/docs/concepts/storage/dynamic-provisioning/">[1]</a></sup>. A Pod that mounts a `Pending` claim can't be scheduled, so `cdr-writer` is `Pending` too. The claim is where the diagnosis lives — the Pod is one object downstream.
+**Root cause:** The `cdr-data` claim sets `storageClassName: fast-ssd`, and no such class exists on the cluster. With no class there is no provisioner to call, so no volume is created and the claim stays Pending<sup><a href="https://kubernetes.io/docs/concepts/storage/dynamic-provisioning/">[1]</a></sup>. A Pod that mounts a Pending claim cannot be scheduled, so `cdr-writer` is Pending too. The claim holds the diagnosis; the Pod is one object downstream.
 
 **Diagnostic commands (the canonical path):**
 
 ```bash
-# 1. The Pod is Pending; its events point at storage, not a crash
+# 1. The Pod is Pending, and its events point at storage rather than a crash
 kubectl get pods -n cdr-storage
-kubectl describe pod -n cdr-storage -l app=cdr-writer | grep -A5 Events
-#    ... pod has unbound ... PersistentVolumeClaims
+kubectl describe pod -n cdr-storage -l app=cdr-writer
+#    Events: ... pod has unbound immediate PersistentVolumeClaims
 
 # 2. First look — the claim's status is the diagnosis
 kubectl get pvc -n cdr-storage
 #    cdr-data   Pending
 
-# 3. Why can't it bind? Ask the claim directly
-kubectl describe pvc cdr-data -n cdr-storage | grep -A3 Events
-#    storageclass.storage.k8s.io "fast-ssd" not found
+# 3. Ask the claim why
+kubectl describe pvc cdr-data -n cdr-storage
+#    Events: storageclass.storage.k8s.io "fast-ssd" not found
 
-# 4. Confirm the class doesn't exist
+# 4. Confirm the class is absent
 kubectl get storageclass
-#    only local-path — there is no fast-ssd
+#    only local-path
 ```
 
-A Pod IS using this claim, so `Pending` here is broken, not the healthy `WaitForFirstConsumer` case.
+A Pod is using this claim, so Pending here is broken, not the healthy `WaitForFirstConsumer` case.
 
-**Fix:** Point the claim at the real class, `local-path`. `storageClassName` is **immutable**, so this is a delete-and-recreate, not an edit — safe because the claim never bound (no data). Drain the consumer first so the delete doesn't block on it:
+**Fix:** Point the claim at the real class. `storageClassName` is **immutable**, so this is a delete and recreate rather than an edit. It is safe here, because the claim never bound and holds no data. Remove the consumer first, so the delete does not wait on it:
 
 ```bash
 kubectl scale deployment cdr-writer -n cdr-storage --replicas=0
 kubectl delete pvc cdr-data -n cdr-storage
-kubectl apply -f - <<'EOF'
+kubectl apply -f - <<'YAML'
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata: { name: cdr-data, namespace: cdr-storage }
@@ -66,7 +70,7 @@ spec:
   accessModes: [ReadWriteOnce]
   storageClassName: local-path
   resources: { requests: { storage: 1Gi } }
-EOF
+YAML
 kubectl scale deployment cdr-writer -n cdr-storage --replicas=1
 ```
 
@@ -77,44 +81,41 @@ kubectl get pvc cdr-data -n cdr-storage        # Bound
 kubectl wait --for=condition=Ready pod -l app=cdr-writer -n cdr-storage --timeout=60s
 ```
 
-**What this scenario tests:** The `get pvc` reflex and the dynamic-provisioning chain (PVC → StorageClass → PV). Self-grading questions:
+**What this scenario tests:** The `get pvc` reflex, and the dynamic-provisioning chain from claim to class to volume. Self-grading questions:
 
 - Was `kubectl get pvc` one of your first three commands, rather than describing the Pod in circles?
-- Did you read `describe pvc` for the *reason* (`storageclass ... not found`) instead of guessing?
-- Did you hit the immutability of `storageClassName` and recreate the claim, rather than fighting a rejected `edit`/`patch`?
+- Did you read `describe pvc` for the reason, instead of guessing?
+- Did you hit the immutability of `storageClassName` and recreate the claim, rather than fighting a rejected patch?
 
-**Expected time:** 3–6 min once `get pvc` is a reflex; 10–15 the first time (lost time goes to `describe pod`/logs on a container that never started, and to trying to edit an immutable field).
+**Expected time:** 3–6 min once `get pvc` is a reflex; 10–15 the first time. Lost time goes to `describe pod` and logs on a container that never started, and to editing an immutable field.
 
-**Production thinking:** A `storageClassName` typo or an uninstalled class fails *every* claim that names it, silently, at apply time — the workload just never comes up. Guard it by pinning workloads to StorageClasses that exist in every target cluster (or leaning on a well-known default), and by alerting on PVCs `Pending` beyond a threshold with a consumer present. The immutability of `storageClassName` is the sharp edge: fixing a wrong class on a claim that already holds data isn't a one-liner — it's a data migration (provision a new PVC on the right class, copy, cut over), which is why getting the class right at creation matters.
+**Production thinking:** A class name typo, or an uninstalled class, fails every claim that names it, silently, at apply time. The workload simply never comes up. Guard it by pinning workloads to classes that exist in every target cluster, and by alerting on claims Pending beyond a threshold *with a consumer present* — that qualifier is what keeps `WaitForFirstConsumer` from paging you. The immutability is the sharp edge: fixing a wrong class on a claim that already holds data is a migration, not a one-liner. Provision a new claim on the right class, copy, cut over.
 
 ---
 
-## Break/fix 02 — Pod names a claim that isn't there
+## Break/fix 02 — A Pod names a claim that is not there
 
-**Symptom:** `directory` in `app-services` is stuck `Pending`. Looks like break/fix 01 — a Pod waiting on storage — but `describe pod` names a different cause: the claim the Pod mounts isn't present at all.
+**Symptom:** `directory` in `app-services` is Pending. It looks like break/fix 01, and `describe pod` names a different cause: the claim the Pod mounts is not present at all.
 
-**Root cause:** The `directory` Deployment's Pod template mounts a volume with `claimName: directory-store`, but no PVC by that name exists — the real claim is `directory-data`. A Pod references a PVC by exact name within its own namespace; a name that matches nothing means the Pod waits for a volume that was never requested<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/">[2]</a></sup>. This is the *absent-claim* leaf, distinct from break/fix 01's *Pending-claim* leaf.
+**Root cause:** The `directory` Deployment's Pod template mounts a volume with `claimName: directory-store`, and no claim by that name exists. The real claim is `directory-data`. A Pod references a claim by exact name within its own namespace, so a name that matches nothing means the Pod waits for a volume nobody requested<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/">[2]</a></sup>. This is the absent-claim leaf, distinct from break/fix 01's Pending-claim leaf.
 
 **Diagnostic commands (the canonical path):**
 
 ```bash
-# 1. Pending Pod — this time the event names the exact claim
-kubectl describe pod -n app-services -l app=directory | grep -A5 Events
-#    persistentvolumeclaim "directory-store" not found
+# 1. The event names the exact claim, and the Volumes block names what the Pod wants
+kubectl describe pod -n app-services -l app=directory
+#    Events:  persistentvolumeclaim "directory-store" not found
+#    Volumes: ClaimName: directory-store
 
-# 2. What is the Pod actually mounting?
-kubectl describe pod -n app-services -l app=directory | grep -A6 Volumes
-#    ClaimName:  directory-store
-
-# 3. First look — list the claims that exist
+# 2. First look — list the claims that exist
 kubectl get pvc -n app-services
-#    directory-data   Pending    <-- exists; healthy WaitForFirstConsumer (no consumer yet)
-#    (no directory-store at all — that's the claim the Pod named)
+#    directory-data   Pending   <-- exists; healthy WaitForFirstConsumer, no consumer yet
+#    (no directory-store at all — the claim the Pod named)
 ```
 
-The discriminator vs break/fix 01: there the named claim (`cdr-data`) was present but `Pending`; here the named claim (`directory-store`) is not in the list at all. Don't be thrown that `directory-data` shows `Pending` — that's the healthy `WaitForFirstConsumer` (the mis-pointed Pod never consumed it); the bug is that the Pod names a claim that was never created. Correlate the Pod's `claimName` with the list, not just the claim statuses.
+The discriminator against break/fix 01: there the named claim was present but Pending; here the named claim is not in the list. Do not be thrown that `directory-data` shows Pending — that is the healthy binding mode, because the mis-pointed Pod never consumed it. Correlate the Pod's `claimName` with the list, not just the claim statuses.
 
-**Fix:** Point the Deployment's `claimName` at the claim that exists. Unlike `storageClassName`, `claimName` is freely mutable — editing the Pod template rolls a new Pod:
+**Fix:** Point the Deployment's `claimName` at the claim that exists. Unlike a claim's `storageClassName`, a Pod's `claimName` is freely mutable, and editing the Pod template rolls a new Pod:
 
 ```bash
 kubectl patch deployment directory -n app-services --type=json \
@@ -126,51 +127,50 @@ kubectl patch deployment directory -n app-services --type=json \
 
 ```bash
 kubectl wait --for=condition=Ready pod -l app=directory -n app-services --timeout=60s
-kubectl get deploy directory -n app-services \
-  -o jsonpath='{.spec.template.spec.volumes[0].persistentVolumeClaim.claimName}'; echo   # directory-data
+kubectl get pvc -n app-services                # directory-data now Bound
 ```
 
-**What this scenario tests:** That the Pod↔PVC link is by name+namespace, and that `get pvc` distinguishes *absent* from *Pending*. Self-grading questions:
+**What this scenario tests:** That the Pod-to-claim link is by name and namespace, and that `get pvc` distinguishes absent from Pending. Self-grading questions:
 
-- Did you correlate the Pod's `claimName` with the `get pvc` list — noticing `directory-store` is absent — rather than fixating on `directory-data` showing `Pending`?
-- Did you read `describe pod`'s `persistentvolumeclaim "..." not found` as "wrong/missing name," not "provisioning failure"?
-- Did you fix the reference rather than creating a redundant `directory-store` PVC to satisfy the typo?
+- Did you correlate the Pod's `claimName` with the `get pvc` list, noticing `directory-store` is absent, rather than fixating on `directory-data` showing Pending?
+- Did you read `persistentvolumeclaim "..." not found` as a wrong name, not a provisioning failure?
+- Did you fix the reference, rather than creating a redundant `directory-store` claim to satisfy the typo?
 
-**Expected time:** 2–4 min; 6–10 the first time (lost time usually goes to mistaking `directory-data`'s healthy `WaitForFirstConsumer` `Pending` for the bug).
+**Expected time:** 2–4 min; 6–10 the first time. Lost time usually goes to mistaking `directory-data`'s healthy Pending for the bug.
 
-**Production thinking:** This ships from a rename that touched one side and not the other — someone renamed the PVC, or copy-pasted a volume block from another workload, and the Deployment's `claimName` drifted from reality. No storage is unhealthy; the Pod just points at nothing. Keep the PVC and the `claimName` in one templated source (Kustomize/Helm, M16–M17) so they can't diverge, and remember that creating a second PVC to match a typo'd name "fixes" the symptom while doubling your volumes and splitting your data — correct the reference, don't duplicate the claim.
+**Production thinking:** This ships from a rename that touched one side only, or from a volume block copy-pasted between workloads. No storage is unhealthy; the Pod points at nothing. Keep the claim and the `claimName` in one templated source (Kustomize or Helm, M16–M17) so they cannot diverge. And remember that creating a second claim to match a typo'd name fixes the symptom while doubling your volumes and splitting your data. Correct the reference instead.
 
 ---
 
-## Break/fix 03 — RWO volume can't span two nodes
+## Break/fix 03 — An RWO volume cannot serve two nodes
 
-**Symptom:** `directory` in `app-services` was scaled to 2 replicas. One is `Running`, the other is stuck (`Pending`/won't schedule). `kubectl get pvc` shows `directory-data` `Bound` — the storage exists and bound cleanly, yet a Pod can't start.
+**Symptom:** `directory` in `app-services` was scaled to 2 replicas. One is Running, the other will not schedule. `kubectl get pvc` shows `directory-data` Bound, so the storage exists and bound cleanly, and a Pod still cannot start.
 
-**Root cause:** `directory-data` is `ReadWriteOnce` — mountable read-write by a single *node* at a time<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes">[3]</a></sup>. The two replicas were forced onto two different nodes; the first attached the volume on its node, and the second, on the other node, can't attach the same RWO volume. Because this is a node-local volume, the conflict surfaces as `volume node affinity conflict` (the PV carries a hard node affinity); on a cloud block volume the identical rule appears as `Multi-Attach error for volume ... already exclusively attached to one node`. The claim being `Bound` while a Pod is stuck is the signature that the failure is at **attach**, not binding.
+**Root cause:** `directory-data` is `ReadWriteOnce`, which permits read-write mounting by a single node<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes">[3]</a></sup>. The two replicas were forced onto different nodes. The first attached the volume on its node, and the second cannot attach the same volume from another node. Because this is a node-local volume, the conflict surfaces as `volume node affinity conflict` — the volume carries hard node affinity. On a cloud block volume the identical rule reads `Multi-Attach error for volume ... already exclusively attached to one node`. A Bound claim with a stuck Pod is the signature of exclusivity, not binding.
 
 **Diagnostic commands (the canonical path):**
 
 ```bash
-# 1. One replica up, one stuck — and they're on different nodes
+# 1. One replica up, one stuck, and they are on different nodes
 kubectl get pods -n app-services -l app=directory -o wide
 
-# 2. First look — the claim is Bound (NOT the black hole / not absent)
+# 2. First look — the claim is Bound, so neither leaf 1 nor leaf 2
 kubectl get pvc -n app-services
 #    directory-data   Bound
 
-# 3. Why is the second replica stuck? Read the scheduling failure
-kubectl describe pod -n app-services -l app=directory | grep -A6 Events
-#    ... node(s) had volume node affinity conflict ...
+# 3. Read the scheduling failure
+kubectl describe pod -n app-services -l app=directory
+#    Events: ... node(s) had volume node affinity conflict ...
 
-# 4. Where is the volume pinned?
+# 4. See where the volume is pinned
 PV=$(kubectl get pvc directory-data -n app-services -o jsonpath='{.spec.volumeName}')
-kubectl describe pv "$PV" | grep -A3 'Node Affinity'
-#    the PV is tied to the node running the healthy replica
+kubectl describe pv "$PV"
+#    Node Affinity: the node running the healthy replica
 ```
 
-`Bound` claim + stuck Pod = attach/access-mode problem, never a binding one.
+Bound claim plus stuck Pod is always an access-mode or topology problem, never a binding one.
 
-**Fix:** Stop asking one RWO volume to back Pods on two nodes — run a single node-bound consumer:
+**Fix:** Stop asking one RWO volume to serve Pods on two nodes. Run a single node-bound consumer:
 
 ```bash
 kubectl scale deployment directory -n app-services --replicas=1
@@ -183,18 +183,89 @@ kubectl rollout status deployment directory -n app-services --timeout=60s
 kubectl get pods -n app-services -l app=directory -o wide     # one Running/Ready, none stuck
 ```
 
-**What this scenario tests:** The access modes, and reading the `Bound`-but-stuck signature as an attach problem. Self-grading questions:
+**What this scenario tests:** The access modes, and reading the Bound-but-stuck signature as exclusivity. Self-grading questions:
 
-- Did the `Bound` claim stop you from chasing a provisioning bug (there wasn't one) and point you at the access mode instead?
-- Did you read `ReadWriteOnce` as "one *node*," not "one Pod" — and recognize `volume node affinity conflict` / `Multi-Attach` as the same rule?
-- Did you land on scaling to one node-bound consumer (or a genuine RWX / `volumeClaimTemplates` design), rather than deleting the stuck Pod and watching it come back?
+- Did the Bound claim stop you chasing a provisioning bug that was not there, and send you to the access mode?
+- Did you read `ReadWriteOnce` as one *node*, and recognize `volume node affinity conflict` and `Multi-Attach` as the same rule?
+- Did you land on a single node-bound consumer, or a genuine RWX or `volumeClaimTemplates` design, rather than deleting the stuck Pod and watching it return?
 
-**Expected time:** 4–8 min; 10–15 the first time (lost time goes to re-checking the `Bound` claim and restarting the healthy replica).
+**Expected time:** 4–8 min; 10–15 the first time. Lost time goes to re-checking the Bound claim and restarting the healthy replica.
 
-**Production thinking:** This is the failure that hides in a single-node dev cluster and detonates in a multi-node one: two replicas on one node share an RWO volume fine, so it "works" in test, then the moment the scheduler spreads them the second replica jams. The design question is what the workload actually needs — a *shared* multi-writer volume means RWX (network file storage, or a CSI driver that advertises RWX), while a *per-replica* durable volume means a StatefulSet with `volumeClaimTemplates` (M07), one PVC per Pod, no sharing. Scaling to one is the incident fix; picking the right access mode and volume topology for the access pattern is the durable one. And `ReadWriteOncePod` is worth knowing as the stricter cousin — one *Pod*, not one node — for volumes that must never be shared even on the same machine.
+**Production thinking:** This failure hides in a single-node dev cluster and detonates on a multi-node one. Two replicas on one node share an RWO volume fine, so it works in test, and the moment the scheduler spreads them the second replica jams. The design question is what the workload needs. A *shared* multi-writer volume means RWX, on network file storage or a driver that advertises it. A *per-replica* durable volume means a StatefulSet with `volumeClaimTemplates` (M07), one claim per Pod, no sharing. Scaling to one is the incident fix. Choosing the right access mode for the access pattern is the durable one.
+
+---
+
+## Break/fix 04 — RWOP refuses a second Pod
+
+**Symptom:** `cdr-writer` in `cdr-storage` runs 2 replicas. One is Running, the other never schedules. `kubectl get pvc` shows `cdr-data` Bound, and `kubectl get pods -o wide` shows both replicas targeting the *same* node — so nothing is being asked to span nodes either.
+
+**Root cause:** `cdr-data` is `ReadWriteOncePod`, which permits read-write mounting by a single Pod across the whole cluster<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes">[3]</a></sup>. The first replica took the claim, and the scheduler refuses every other Pod that mounts it, including Pods on the same node. `ReadWriteOnce` counts nodes and would have allowed both of these Pods, because they share one node. `ReadWriteOncePod` counts Pods. The claim is Bound throughout: the failure is exclusivity at the Pod level.
+
+**Diagnostic commands (the canonical path):**
+
+```bash
+# 1. One replica up, one Pending — and both want the same node
+kubectl get pods -n cdr-storage -o wide
+
+# 2. First look — the claim is Bound
+kubectl get pvc -n cdr-storage
+#    cdr-data   Bound
+
+# 3. Rule out the node-spanning case: the volume is on the node already in use
+PV=$(kubectl get pvc cdr-data -n cdr-storage -o jsonpath='{.spec.volumeName}')
+kubectl describe pv "$PV"
+#    Node Affinity: the node running the healthy replica
+
+# 4. Read the scheduler's own words
+kubectl describe pod -n cdr-storage -l app=cdr-writer
+#    Events: node has pod using PersistentVolumeClaim with the same name and
+#            ReadWriteOncePod access mode
+
+# 5. Confirm the access mode
+kubectl describe pvc cdr-data -n cdr-storage
+#    Access Modes: RWOP
+```
+
+**Fix:** This workload runs two Pods on one node by design, so the claim needs `ReadWriteOnce`. A claim's `accessModes` is immutable, so that means delete and recreate. Deleting a claim a Pod still uses does not remove it — Storage Object in Use Protection holds it in Terminating behind a `kubernetes.io/pvc-protection` finalizer until the consumer is gone<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#storage-object-in-use-protection">[4]</a></sup>. On a claim holding real records this procedure is a data migration, because the class reclaim policy is `Delete`.
+
+```bash
+kubectl patch pvc cdr-data -n cdr-storage -p '{"spec":{"accessModes":["ReadWriteOnce"]}}'   # rejected: immutable
+kubectl delete pvc cdr-data -n cdr-storage --wait=false
+kubectl get pvc -n cdr-storage                      # Terminating, held by the finalizer
+kubectl scale deployment cdr-writer -n cdr-storage --replicas=0   # consumer gone → delete completes
+kubectl apply -f - <<'YAML'
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: cdr-data, namespace: cdr-storage }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources: { requests: { storage: 1Gi } }
+YAML
+kubectl scale deployment cdr-writer -n cdr-storage --replicas=2
+```
+
+**Verify:**
+
+```bash
+kubectl rollout status deployment cdr-writer -n cdr-storage --timeout=90s
+kubectl get pods -n cdr-storage -o wide       # both replicas Running/Ready on one node
+kubectl get pvc cdr-data -n cdr-storage       # Bound, ACCESS MODES = RWO
+```
+
+**What this scenario tests:** That access modes count nodes except RWOP, which counts Pods, and that a claim's spec is immutable while a live consumer blocks its deletion. Self-grading questions:
+
+- Did you rule out break/fix 03 by checking the `NODE` column, instead of assuming every Bound-but-stuck Pod is a node-spanning conflict?
+- Did you read the `FailedScheduling` message rather than inferring the cause, and separate it from the control-plane taint line in the same event?
+- Did you recognize the Terminating claim as in-use protection working, rather than a stuck object needing a forced finalizer removal?
+
+**Expected time:** 5–9 min; 12–18 the first time. Lost time goes to retrying the rejected patch, and to treating the Terminating claim as a second fault.
+
+**Production thinking:** RWOP is the right tool for a volume that must never have two writers, such as a single-writer database, and it caps that workload at one Pod by design. The failure mode is tightening a shared claim to RWOP without noticing the Deployment runs more than one replica — the workload then loses capacity silently, one Pod at a time, with a perfectly healthy-looking claim. Put single-writer volumes behind a workload that cannot exceed one Pod, and treat a claim's access mode as part of the workload's contract rather than a storage detail. Force-removing the `pvc-protection` finalizer to hurry a delete is the anti-pattern: Kubernetes forgets the object while the real disk, and any process still writing to it, survives.
 
 ## References
 
 1. Kubernetes — Dynamic Volume Provisioning: https://kubernetes.io/docs/concepts/storage/dynamic-provisioning/
 2. Kubernetes — Persistent Volumes: https://kubernetes.io/docs/concepts/storage/persistent-volumes/
 3. Kubernetes — Access Modes: https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes
+4. Kubernetes — Storage Object in Use Protection: https://kubernetes.io/docs/concepts/storage/persistent-volumes/#storage-object-in-use-protection

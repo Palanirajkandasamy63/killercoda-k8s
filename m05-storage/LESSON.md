@@ -1,50 +1,48 @@
-# M05 — Storage: PersistentVolumes, Claims & StorageClasses
+# M05 — Storage: Volumes, PersistentVolumes, Claims & StorageClasses
 
-> How a Pod gets durable storage that outlives it — PVCs, PVs, StorageClasses, dynamic provisioning, and access modes — and the three places on that path where a Pod stops before it ever runs.
+> A Pod's own filesystem dies with the Pod. This module covers the objects that give a Pod durable storage, and the three places on that path where a Pod stops before it runs.
 
 ## What you'll learn
 
-- Explain the claim/volume split: a **PersistentVolumeClaim** is a request for storage, a **PersistentVolume** is the actual volume, and a **StorageClass** is the template that provisions one to satisfy the other
-- Trace a Pod's storage from `claimName` to a mounted directory: Pod → PVC → StorageClass → PV → attach → mount, and name what owns each hop
-- Read a claim's real state with `kubectl get pvc` and split a stuck Pod three ways: the claim is *absent*, *Pending* (unbound), or *Bound but unattachable*
-- Distinguish **dynamic** provisioning (a StorageClass creates the PV on demand) from **static** (an admin pre-creates the PV), and recognize `WaitForFirstConsumer` binding as healthy, not broken
-- Distinguish the access modes — **ReadWriteOnce**, **ReadOnlyMany**, **ReadWriteMany**, **ReadWriteOncePod** — and diagnose the Multi-Attach failure you get when an RWO volume is asked to span two nodes
-- Reason about the reclaim policy (`Retain` vs `Delete`) and why deleting a PVC can quietly destroy data
+- Define a volume as a directory the containers in a Pod can reach, declare one with `.spec.volumes` and `.spec.containers[*].volumeMounts`, and separate the ephemeral types from the persistent path
+- Explain the split: a PVC requests storage, a PV is the storage, a StorageClass provisions a PV to satisfy the PVC, and `claimRef` records the binding
+- Split a storage-stuck Pod three ways with one command: the claim is absent, `Pending`, or `Bound` while the volume still refuses the Pod
+- Tell dynamic provisioning from static, and read a `WaitForFirstConsumer` claim in `Pending` as healthy
+- State what each access mode permits, and diagnose both exclusivity failures: RWO across two nodes, RWOP across two Pods
+- Predict what `kubectl delete pvc` does under each reclaim policy, and why that delete sometimes does not finish
 
 ## Why it matters
 
-A container's own filesystem is ephemeral. Restart the container and it reverts to the image; delete the Pod and everything it wrote is gone. That's correct for stateless services, but Polyphone runs stateful ones too — `cdr-writer` persisting Call Detail Records, `media-engine` and `presence` holding per-instance state, `directory` keeping its address book. For those, the data has to outlive the Pod, survive a reschedule onto another node, and be there when a replacement Pod starts. The Kubernetes storage subsystem is what makes that possible: a claim the workload owns, a volume the platform provisions, and a binding between them that persists across the Pod's whole disposable lifecycle.
+A container's filesystem is ephemeral. Restart the container and it reverts to the image. Delete the Pod and every byte it wrote is gone. That is correct for a stateless service. Polyphone also runs stateful ones: `cdr-writer` persists Call Detail Records, and `directory` keeps an address book. Their data must outlive the Pod, survive a reschedule onto another node, and be present when a replacement Pod starts.
 
-The trap in storage debugging is that the failure lands on the *Pod* — it sits in `Pending` or `ContainerCreating` and never starts — while the actual problem is one or two objects away, in a claim or a class the Pod never mentions by name in its own events. An SRE who knows the chain runs `kubectl get pvc` first and reads the claim's phase; the answer is almost always right there. One who doesn't reads Pod logs that don't exist yet, describes the Deployment, restarts the ReplicaSet, and loses twenty minutes to a workload that was never unhealthy — it was just waiting on storage that never arrived.
+Storage failures are hard to read, because the symptom and the cause sit in different objects. The Pod stops in `Pending` or `ContainerCreating` and writes no logs. The cause is one or two objects away, in a claim or a class the Pod's own events never name. An SRE who knows the chain runs `kubectl get pvc` first, and the claim's phase gives the answer. An SRE who does not know it reads logs that do not exist, restarts the ReplicaSet, and loses twenty minutes on a workload that was never unhealthy. It was waiting for storage that never arrived.
 
 ## Scope
 
-**Covers:** the PersistentVolume / PersistentVolumeClaim model and how they bind, StorageClasses and dynamic provisioning, the difference between dynamic and static provisioning, the CSI provisioning pipeline at a mental-model level, `volumeBindingMode` (`Immediate` vs `WaitForFirstConsumer`), the access modes (RWO / ROX / RWX / RWOP) and the Multi-Attach failure, capacity and the bind-matching rules, the reclaim policy (`Retain` / `Delete`) and its data-safety consequence, and the *claim-absent / claim-Pending / claim-Bound-but-unattachable* storage differential.
+**Covers:** the volume abstraction and the common volume types, ephemeral volumes in outline, the PersistentVolume and PersistentVolumeClaim model, `claimRef` binding, static and dynamic provisioning, StorageClasses, `volumeBindingMode`, the four access modes and the exclusivity failures they produce, PV phases, Storage Object in Use Protection, the reclaim policies, volume expansion, and the *absent / `Pending` / `Bound`-but-stuck* differential.
 
-**Doesn't cover:** the internals of specific CSI drivers and cloud volume plumbing (driver-dependent), StatefulSet `volumeClaimTemplates` and per-Pod storage identity → M07 (used in the fleet, glossed here), volume snapshots and CSI snapshot/restore → M25, `emptyDir` / `hostPath` / `configMap` / `secret` and other non-persistent volume types beyond a passing mention (config volumes were M03), and volume expansion / resize mechanics beyond naming them. This module is the durable-storage path: claim to mounted directory.
+**Doesn't cover:** CSI driver internals, which are driver-specific; StatefulSet `volumeClaimTemplates` and per-Pod storage identity (M07, M24); ConfigMap and Secret volumes in depth (M03); node disk pressure and eviction (M06); and CSI `VolumeSnapshot`, named once here and left to M26.
 
-**Assumes:** M00 (`get → describe → events → logs`; spec vs status), M01 (Pods, Deployments, ReplicaSets, a Pod can be `Pending`), and the fact from M04 that a Pod runs on a specific node. The node detail is load-bearing here: a volume is attached to a node, and that ties a Pod's storage to where the Pod can run.
+**Assumes:** M00 (`get → describe → events → logs`, spec against status), M01 (Pods, Deployments, a `Pending` Pod), M03 (ConfigMap and Secret volumes), and M04's fact that a Pod runs on one specific node. That node is load-bearing here: a volume attaches to a node, so a Pod's storage constrains where the Pod can run.
 
 ## Vocabulary
 
 | Term | Definition |
 |------|------------|
-| **PersistentVolume (PV)** | A cluster-scoped object representing a real piece of storage (a cloud disk, an NFS export, a local directory). It exists independently of any Pod. Not namespaced. |
-| **PersistentVolumeClaim (PVC)** | A namespaced request for storage — a size, an access mode, optionally a StorageClass. A Pod references a PVC by name; the PVC binds to a PV. |
-| **binding** | The one-to-one association between a PVC and a PV. Once bound, that PV is exclusively the claim's; no other PVC can take it. A PVC's `STATUS` is `Pending` until it binds, then `Bound`. |
-| **StorageClass (SC)** | A named template describing *how* to provision a PV — which provisioner to call, with what parameters. Referenced by a PVC's `storageClassName`. |
-| **dynamic provisioning** | A PVC naming a StorageClass triggers the provisioner to create a matching PV automatically. No admin pre-creates volumes. The default path. |
-| **static provisioning** | An admin creates PV objects by hand ahead of time; a PVC binds to a pre-existing PV that matches (size, access mode, class). |
-| **provisioner / CSI driver** | The component that actually creates and deletes the storage. Modern drivers implement the **Container Storage Interface (CSI)**; `rancher.io/local-path` is a simple non-CSI provisioner used in this lab. |
-| **access mode** | How the volume may be mounted: **ReadWriteOnce** (RWO, one *node* read-write), **ReadOnlyMany** (ROX), **ReadWriteMany** (RWX, many nodes read-write), **ReadWriteOncePod** (RWOP, exactly one Pod). A request, enforced by the volume plugin. |
-| **`volumeBindingMode`** | On a StorageClass: `Immediate` binds the PV as soon as the PVC is created; **`WaitForFirstConsumer`** waits until a Pod uses the PVC, so the volume is placed on the Pod's node. |
-| **reclaim policy** | What happens to the PV when its PVC is deleted: **`Delete`** destroys the underlying storage; **`Retain`** keeps it (moves the PV to `Released` for manual recovery). |
-| **`volumeClaimTemplates`** | A StatefulSet field that mints one PVC per Pod, giving each replica its own stable volume (M07). The fleet's StatefulSets use this. |
-| **Multi-Attach** | The error when an RWO volume already attached to one node is requested by a Pod on a second node. On local volumes the same rule surfaces as a *volume node affinity conflict*. |
+| **volume** | A directory, possibly with data in it, that the containers in a Pod can reach. Its type sets its lifetime and its backing medium. |
+| **PersistentVolume (PV)** | A piece of storage in the cluster that an administrator provisioned, or that a StorageClass provisioned dynamically. Cluster-scoped, with its own lifecycle. |
+| **PersistentVolumeClaim (PVC)** | A request for storage by a user: a size, an access mode, optionally a class. Namespaced. Also called a claim. |
+| **binding** | The exclusive, one-to-one association between one claim and one volume, recorded as `claimRef` on the volume and `volumeName` on the claim. |
+| **StorageClass (SC)** | A named recipe for provisioning a volume: which provisioner, which parameters, which reclaim policy, which binding mode. A claim selects one by `storageClassName`. |
+| **provisioning** | How a volume comes to exist: **dynamically**, when the claim's class creates one on demand, or **statically**, when an administrator pre-creates it. |
+| **provisioner / CSI driver** | The component that creates and deletes the real storage. Modern drivers implement the Container Storage Interface (CSI). |
+| **access mode** | How many nodes, or Pods, may mount a volume at once, and whether they may write. RWO, ROX, RWX or RWOP. |
+| **`allowVolumeExpansion`** | The class field permitting a user to grow a claim. Absent or `false`, the API rejects the growth. |
+| **Storage Object in Use Protection** | Finalizers that postpone deleting a claim a Pod uses, or a volume a claim is bound to. |
 
 ## Mental model
 
-A Pod's storage travels a fixed chain, and each hop is owned by a different object. The Pod names a **PVC** by `claimName`. The PVC binds to a **PV** — either one a **StorageClass** provisioned on demand, or one an admin pre-created. That PV is a real volume that gets **attached** to the node the Pod landed on and then **mounted** into the container. Break any link and the Pod never starts; it waits.
+A Pod's storage travels a fixed chain, and a different object owns each hop. The Pod names a claim in `claimName`. The claim binds to a volume, provisioned on demand or pre-created. That volume **attaches** to the node the Pod landed on, then **mounts** into the container as a directory. Break any link and the Pod does not start. It waits.
 
 ```mermaid
 %%{init: {'theme':'base', 'themeVariables': {
@@ -55,25 +53,70 @@ A Pod's storage travels a fixed chain, and each hop is owned by a different obje
 }}}%%
 flowchart TD
     A[Pod names a claim] --> B{claim exists<br/>in the namespace?}
-    B -->|no| E1[Pod Pending<br/>'persistentvolumeclaim not found']
-    B -->|yes| C{PVC Bound?}
-    C -->|no → stuck Pending| E2[no volume<br/>bad / missing StorageClass, no matching PV]
-    C -->|yes → a PV| D{volume attaches on<br/>the Pod's node?}
-    D -->|no| E3[Pending / ContainerCreating<br/>RWO across nodes — Multi-Attach / node affinity conflict]
-    D -->|yes| F[mounted; data persists across the Pod]
+    B -->|no| E1[Pod Pending<br/>'claim not found']
+    B -->|yes| C{claim Bound?}
+    C -->|no| E2[no volume<br/>missing class, or no match]
+    C -->|yes| D{volume usable<br/>by this Pod?}
+    D -->|no| E3[stuck<br/>exclusive: RWO node, RWOP Pod]
+    D -->|yes| F[mounted; data outlives the Pod]
 ```
 
-The three red leaves are the three ways a Pod fails to get its storage, and one command splits them: **`kubectl get pvc`**. If the claim the Pod names isn't in the list, the Pod points at a claim that doesn't exist. If it's there but `Pending`, the claim can't bind — a class problem or no matching volume. If it's `Bound` and the Pod is *still* stuck, the volume can't attach where the Pod is scheduled. This is the same instinct M04 built on `get endpoints`: **the Pod's status tells you it's stuck; the claim tells you why. Read the claim first.**
+The three red leaves are the three ways a Pod fails to get storage, and one command separates them: **`kubectl get pvc`**. A claim absent from the list means the Pod points at an object that does not exist. A `Pending` claim cannot get a volume. A `Bound` claim with a stuck Pod means the volume refuses that Pod. M04 built the same instinct on `get endpoints`: **the Pod's status says it is stuck, and the claim says why. Read the claim first.**
 
 ## Concept walkthrough
 
-### The claim/volume split, and dynamic provisioning
+### A volume is a directory
 
-Kubernetes separates *asking for storage* from *providing it*. A workload author writes a **PersistentVolumeClaim** — "I need 1Gi, ReadWriteOnce" — and never has to know what backs it. A cluster admin (or, more often, an automated provisioner) supplies a **PersistentVolume**, the real thing<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/">[1]</a></sup>. The two bind: the control plane matches the claim to a suitable volume, and from then on that PV belongs exclusively to that PVC. The Pod references only the claim, by name, in its own namespace — it never names a PV<sup><a href="https://kubernetes.io/docs/tasks/configure-pod-container/configure-persistent-volume-storage/">[8]</a></sup>. This indirection is the whole design: the Pod is portable and disposable, the claim is the durable handle to its data, and the volume underneath can be any storage technology the cluster supports.
+At its core, a volume is a directory, possibly with data in it, that the containers in a Pod can reach<sup><a href="https://kubernetes.io/docs/concepts/storage/volumes/">[1]</a></sup>. Nothing more. The volume's *type* decides what backs that directory, how long it lives, and which nodes reach it.
 
-The question is where the PV comes from. In **static provisioning**, an admin creates PV objects ahead of time and claims bind to whatever matches. That doesn't scale — someone has to pre-carve every volume. **Dynamic provisioning** is the default answer: the PVC names a **StorageClass**, and creating the claim triggers that class's provisioner to create a PV on the spot, sized and configured to match<sup><a href="https://kubernetes.io/docs/concepts/storage/dynamic-provisioning/">[3]</a></sup>. No pre-provisioning, no admin in the loop. A StorageClass is just a named recipe: which provisioner to call, with what parameters, at what reclaim policy and binding mode<sup><a href="https://kubernetes.io/docs/concepts/storage/storage-classes/">[2]</a></sup>. This lab's class is `local-path`, whose provisioner (`rancher.io/local-path`) carves a directory on a node's disk; a cloud cluster's class would call a CSI driver that provisions a network disk instead.
+Using one takes two declarations. Specify the volumes to provide for the Pod in `.spec.volumes`, then declare where to mount them into containers in `.spec.containers[*].volumeMounts`<sup><a href="https://kubernetes.io/docs/concepts/storage/volumes/">[1]</a></sup>. The two halves join by name. A volume the Pod provides but never mounts does nothing, and a mount naming no volume is invalid.
 
-That gives the module's first failure. If a PVC names a `storageClassName` that doesn't exist — a typo, or a class that was never installed — there is no provisioner to call, so no PV is ever created, and the PVC sits in `Pending` forever. The Pod that references it can't start: it stays `Pending` with an event like `pod has unbound immediate PersistentVolumeClaims`. Nothing is crashing; nothing logs an error; the workload is simply waiting on a volume that will never arrive. `kubectl describe pvc` names the cause outright — `storageclass.storage.k8s.io "fast-ssd" not found` — which is why the claim, not the Pod, is where the diagnosis lives.
+```yaml
+spec:
+  volumes:
+    - name: data                                  # what to provide
+      persistentVolumeClaim: { claimName: cdr-data }
+    - name: scratch
+      emptyDir: {}
+  containers:
+    - name: app
+      volumeMounts:
+        - { name: data, mountPath: /data }        # where to put it
+        - { name: scratch, mountPath: /tmp/work }
+```
+
+Most volume types are **ephemeral**: their lifetime matches the Pod's, so deleting the Pod deletes the volume<sup><a href="https://kubernetes.io/docs/concepts/storage/ephemeral-volumes/">[2]</a></sup>. That suits data a Pod can rebuild. Only `persistentVolumeClaim` reaches storage with a life of its own.
+
+| Type | Lifetime | What it is for |
+|------|----------|----------------|
+| `emptyDir` | the Pod | Scratch space, a cache, a directory two containers share. |
+| `configMap`, `secret`, `projected` | the Pod | Configuration and credentials, as files (M03). |
+| `downwardAPI` | the Pod | Pod fields, such as its name or labels, as files. |
+| `persistentVolumeClaim` | independent | Durable data. The rest of this module. |
+| `hostPath` | the node | A path on the node's filesystem. Restricted in production. |
+| `local` | the node | A disk on one node, presented as a volume with node affinity. |
+| `nfs` | independent | A network file share many nodes mount at once. |
+| `csi` | independent | Any storage a CSI driver provides. Every cloud volume. |
+
+One ephemeral form is worth naming: a **generic ephemeral volume** gives a Pod scratch space with a claim's feature set, then deletes it with the Pod<sup><a href="https://kubernetes.io/docs/concepts/storage/ephemeral-volumes/">[2]</a></sup>.
+
+### The claim and the volume
+
+Kubernetes separates asking for storage from supplying it. A **PersistentVolume** is a piece of storage in the cluster that an administrator provisioned, or that a StorageClass provisioned dynamically<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/">[3]</a></sup>. It is a cluster resource, like a node. A **PersistentVolumeClaim** is a request for storage by a user<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/">[3]</a></sup>. The parallel is exact: Pods consume node resources, claims consume volume resources.
+
+A control loop watches for new claims, finds a matching volume, and binds the two. **Binding is exclusive and one-to-one.** It is a `ClaimRef`, a bi-directional reference between the PersistentVolume and the PersistentVolumeClaim<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/">[3]</a></sup>: the volume's `spec.claimRef` names the claim, the claim's `spec.volumeName` names the volume, and `kubectl get pv` prints the same fact in its `CLAIM` column. Two consequences follow. No second claim can take a bound volume, however well it matches, because that volume already points at a claim. And a volume whose claim was deleted keeps its stale `claimRef`, which is why a `Released` volume never rebinds on its own.
+
+A claim that no volume satisfies stays unbound indefinitely, then binds when a suitable volume appears. A pool of 50Gi volumes never satisfies a request for 100Gi.
+
+Pods then use the claim as a volume, and **the claim must exist in the same namespace as the Pod using it**<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/">[3]</a></sup>. Claims are namespaced and volumes are not, so the namespace boundary sits at the claim. A claim in another namespace is invisible to the Pod, and so is a claim whose name differs by one character. The Pod stays `Pending`, and `describe pod` says it plainly: `persistentvolumeclaim "directory-store" not found`.
+
+Two fields narrow which volume a claim accepts. `storageClassName` restricts it to volumes of that class, and a **selector** restricts it further by label, through `matchLabels` and `matchExpressions`<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/">[3]</a></sup>. Both matter mainly in static provisioning, where a claim chooses among pre-created volumes; on a dynamic claim a selector usually just prevents provisioning. Node placement is the related constraint, and the volume owns it: a `local` volume carries node affinity to the machine holding its disk, so any Pod mounting it runs there.
+
+### StorageClasses, provisioning, and binding mode
+
+A claim gets its volume in one of two ways. In **static provisioning**, an administrator creates volumes in advance and claims bind to whatever matches. That does not scale, because somebody carves every volume by hand. **Dynamic provisioning** is the default answer: when no static volume matches, the claim's StorageClass provisions one for it<sup><a href="https://kubernetes.io/docs/concepts/storage/dynamic-provisioning/">[4]</a></sup>. A StorageClass is a named recipe — which provisioner, which parameters, which reclaim policy, which binding mode<sup><a href="https://kubernetes.io/docs/concepts/storage/storage-classes/">[5]</a></sup>. This lab's class is `local-path`, which carves a directory on a node's disk. A cloud class calls a CSI driver instead.
+
+A claim does not have to request a class, and two spellings differ<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/">[3]</a></sup>. With `storageClassName` **omitted**, the `DefaultStorageClass` admission plugin assigns the cluster's default class. With `storageClassName: ""`, the empty string disables dynamic provisioning for that claim, which then binds only to a pre-created classless volume. A class that does not exist is the third case, and it is a fault: no provisioner answers, no volume appears, and the claim sits `Pending` forever. `kubectl describe pvc` names the cause — `storageclass.storage.k8s.io "fast-ssd" not found`.
 
 ```yaml
 apiVersion: v1
@@ -85,84 +128,126 @@ spec:
   resources: { requests: { storage: 1Gi } }
 ```
 
-One sharp edge worth internalizing now: **`storageClassName` is immutable once the PVC exists.** You cannot `kubectl edit` a bound-to-the-wrong-class claim to fix it — the API rejects the change. The remedy is to delete the PVC and recreate it with the right class, which is safe when the claim never bound (no data to lose) and a genuine data-migration problem when it did.
+`storageClassName` is immutable once the claim exists, so the API rejects an edit onto a different class. Delete the claim and recreate it instead. That is safe while the claim never bound, and it is a data migration once it did. The same holds for `accessModes`.
 
-### Binding, the `get pvc` triage, and what survives a delete
+The class also decides *when* the binding happens<sup><a href="https://kubernetes.io/docs/concepts/storage/storage-classes/#volume-binding-mode">[6]</a></sup>.
 
-A PVC has a lifecycle you can read at a glance. It starts `Pending`, becomes `Bound` when it's matched to a PV, and — crucially — a Pod that mounts a `Pending` claim will not start. So the first move on any storage-stuck Pod is `kubectl get pvc -n <ns>`, and the claim's `STATUS` column splits the failure: `Bound` (the storage is fine, look elsewhere), `Pending` (the claim can't get a volume), or *the claim you expected isn't listed at all* (the Pod names a claim that doesn't exist — the second failure this module drills). A Pod referencing a `claimName` with no matching PVC in its namespace stays `Pending`, and `kubectl describe pod` says so plainly: `persistentvolumeclaim "directory-store" not found`. PVCs are namespaced; a claim in another namespace, or a one-character typo in the name, is invisible to the Pod.
+| `volumeBindingMode` | When the claim binds |
+|---------------------|----------------------|
+| `Immediate` | As soon as the claim is created. The default when a class omits the field. |
+| `WaitForFirstConsumer` | When the first Pod uses the claim, so the volume lands on that Pod's node. |
 
-`WaitForFirstConsumer` complicates the reading in a way you have to know cold, because it makes a *healthy* claim sit `Pending`. Most modern StorageClasses — `local-path` included — set `volumeBindingMode: WaitForFirstConsumer`, which deliberately delays binding until a Pod actually uses the claim<sup><a href="https://kubernetes.io/docs/concepts/storage/storage-classes/#volume-binding-mode">[5]</a></sup>. The reason is placement: for node-local or topology-constrained storage, the system can't know *which* node's volume to create until it knows where the Pod will run, so it waits for the scheduler to pick a node and then provisions there. The consequence for you: a PVC with no consuming Pod shows `Pending` and `describe` says `waiting for first consumer to be created before binding` — that is normal, not a bug. `Pending` means "broken" only once a Pod is trying to use the claim and it still won't bind.
+`WaitForFirstConsumer` makes a *healthy* claim sit `Pending`, which is the most misread state in Kubernetes storage. Most node-local classes set it, `local-path` included. The reason is placement: the system cannot know which node's volume to create until the scheduler picks a node, so it waits. Such a claim shows `Pending` with the event `waiting for first consumer to be created before binding`. **`Pending` means broken only once a Pod is trying to use the claim and it still will not bind.**
 
-The reclaim policy is the other half of the lifecycle, and it's the one that bites in production. When a PVC is deleted, the StorageClass's `reclaimPolicy` decides the PV's fate: **`Delete`** (the default for most dynamic classes, including `local-path`) destroys the underlying storage along with the PV — the data is gone. **`Retain`** keeps the PV and its data, moving it to a `Released` state that an admin can recover by hand<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#reclaiming">[6]</a></sup>. This is why `kubectl delete pvc` is not a harmless cleanup command: on a `Delete`-policy class it is a data-destruction command, and the fact that the claim looks like a lightweight request object makes the blast radius easy to underestimate.
+A claim can also grow after it binds. Set `allowVolumeExpansion: true` on the class, then raise `spec.resources.requests.storage` on the claim<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims">[7]</a></sup>. Three limits hold. Growth is one-way, because a claim never shrinks. The class must permit it, and that field defaults to absent. And expanding the device is not expanding the filesystem on it: some volume types finish that online, while others need the Pod to restart first.
+
+### Access modes, attach, and exclusivity
+
+A bound claim still has to become a mounted directory, in two steps: **attach** makes the volume available to a node, and **mount** exposes it inside the container. A CSI driver splits its work the same way, so the stage names a symptom's owner: a `Pending` claim on a class that exists is a provisioning fault, an attach error is the attach/detach controller, and a `FailedMount` is the driver's node plugin<sup><a href="https://kubernetes.io/docs/concepts/storage/volumes/#csi">[8]</a></sup>. Attach is where the access mode bites, and that mode is a property of both the volume and the claim<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes">[9]</a></sup>.
+
+| Mode | Short name | What the volume permits |
+|------|-----------|-------------------------|
+| `ReadWriteOnce` | RWO | Read-write mounting by a **single node**. Several Pods on that node may all read and write it. |
+| `ReadOnlyMany` | ROX | Read-only mounting by **many nodes**. |
+| `ReadWriteMany` | RWX | Read-write mounting by **many nodes**. |
+| `ReadWriteOncePod` | RWOP | Read-write mounting by a **single Pod**, cluster-wide. |
+
+Read the table by counting the right thing. Three modes count **nodes**, and only RWOP counts **Pods**. So RWO permits many Pods that share one node. ROX and RWX permit many nodes, and therefore many Pods on many nodes; the difference between those two is only whether the nodes may write. RWOP is the strict one — one Pod in the whole cluster reads or writes that claim, and a second Pod is refused even on the same node.
+
+Two rules complete the picture. A volume advertises only the modes its storage supports, so a block disk cannot offer RWX however the claim is spelled. And a volume mounts under one access mode at a time, even when it supports several<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes">[9]</a></sup>.
+
+Exclusivity produces the failure that looks strangest, because the claim is perfectly `Bound`. Scale a Deployment that mounts one RWO claim until two replicas land on two nodes. The first node attaches the volume, and the second Pod cannot have it. On a network block volume the error is `Multi-Attach error for volume ... already exclusively attached to one node`. On a node-local volume the same rule reads `volume node affinity conflict`, because that volume is pinned to the machine holding its disk. RWOP gives the Pod-level twin, and the scheduler states it in words: `node has pod using PersistentVolumeClaim with the same name and ReadWriteOncePod access mode`.
+
+None of the three is a broken volume. Each is an access mode keeping its promise. **A `Bound` claim with a stuck Pod means the volume refuses that consumer**, so read the access mode, not the provisioner. Stop asking for what the mode forbids: run one consumer where the mode allows one, move to RWX on network file storage when replicas on many nodes must genuinely share a volume, or give each replica its own volume with `volumeClaimTemplates` (M07).
+
+### Phases, deletion, and reclaim policy
+
+A volume reports its place in that lifecycle as a phase<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#phase">[10]</a></sup>.
+
+| Phase | Meaning |
+|-------|---------|
+| `Available` | A free resource, not bound to a claim. |
+| `Bound` | The volume is bound to a claim. |
+| `Released` | The claim is deleted; the cluster has not yet reclaimed the storage. |
+| `Failed` | Automatic reclamation failed. |
+
+Deleting a claim is where storage gets dangerous, and two mechanisms decide the outcome. The first is **Storage Object in Use Protection**, which stops a claim a Pod is using, or a volume a claim is bound to, from being removed out from under live data<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#storage-object-in-use-protection">[11]</a></sup>. A claim counts as in use whenever a Pod references it. Delete such a claim and it stays: a `kubernetes.io/pvc-protection` finalizer holds it in `Terminating` until no Pod uses it, and a bound volume behaves the same way through its own finalizer. So `kubectl delete pvc` appears to hang, and nothing is wrong. Scale the consumer to zero and the deletion completes.
+
+The second mechanism is the **reclaim policy**, which decides the volume's fate once the claim is gone<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#reclaiming">[12]</a></sup>.
+
+| Policy | When the claim is deleted | Use it for |
+|--------|---------------------------|------------|
+| `Delete` | Deletes the PV object **and** the storage behind it. The data is gone. | Scratch data. The default on most dynamic classes, `local-path` included. |
+| `Retain` | Keeps the volume and its data. It moves to `Released` and waits for a human. | Data whose loss is an incident. |
+| `Recycle` | Deprecated. Use dynamic provisioning instead. | Nothing new. |
+
+So `kubectl delete pvc` is not harmless cleanup. On a `Delete`-policy class it is a data-destruction command, and the claim's small YAML makes that blast radius easy to underestimate. Put anything you cannot lose on a `Retain` class. One adjacent capability closes the loop: a CSI driver that supports snapshots captures a point-in-time copy through `VolumeSnapshot` and `VolumeSnapshotClass` objects, and a new claim can be created from it<sup><a href="https://kubernetes.io/docs/concepts/storage/volume-snapshots/">[13]</a></sup>. M26 treats backup and restore as an operational practice.
 
 <details>
-<summary>📖 Going deeper: reclaim policy, the PV lifecycle, and recovering a Released volume<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#reclaiming">[6]</a></sup></summary>
+<summary>📖 Going deeper: recovering a Released volume, and the deletes that hang<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#reclaiming">[12]</a></sup></summary>
 
-A PV moves through phases: `Available` (free, not yet claimed), `Bound` (matched to a PVC), `Released` (its PVC was deleted but the storage wasn't reclaimed), and `Failed` (automatic reclamation errored)<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/">[1]</a></sup>. On a `Retain` policy, deleting the PVC leaves the PV `Released` with the data intact — but a `Released` PV will *not* automatically bind to a new claim, even an identical one, because it still carries a reference to the old (deleted) claim. Recovering it is a deliberate act: edit the PV, clear `spec.claimRef`, and it returns to `Available` so a new PVC can bind it.
+On a `Retain` class, deleting the claim leaves the volume `Released` with the data intact. It will not bind to a new claim, even an identical one, because its `claimRef` still names the claim you deleted. Recovery is deliberate: edit the volume, clear `spec.claimRef`, and it returns to `Available`. When one specific claim must get it, pre-create that claim with `volumeName` set to the volume, so no other claim wins the race.
 
-The practical rule: for anything whose loss would be an incident — a database's volume, `cdr-writer`'s records — put the StorageClass (or the specific PV) on `Retain`, and accept that you'll clean up `Released` volumes manually. `Delete` is right for scratch and rebuildable data where automatic cleanup is worth more than the safety net. The mistake to avoid is running important data on a `Delete`-policy class and treating `kubectl delete pvc` as routine.
+Three delete-time states are worth recognizing on sight. A claim in `Terminating` while a Pod still references it is in-use protection working correctly, so scale the consumer down. A volume in `Released` on a `Retain` class waits for the manual step above. A volume in `Failed` means reclamation errored, so the driver could not delete the backing storage, and the API object now misrepresents infrastructure that may still exist and still cost money.
 
-</details>
-
-### Access modes, attach, and the Multi-Attach failure
-
-A bound claim still has to become a mounted directory, and that happens in two steps the CSI model makes explicit: **attach** (make the volume available to a node) and **mount** (expose it inside the container's filesystem)<sup><a href="https://kubernetes.io/docs/concepts/storage/volumes/#csi">[4]</a></sup>. Attach is where the access mode bites. The **access mode** is a property of the claim/volume that declares how many places can mount it at once: **ReadWriteOnce** (RWO) allows read-write mounting by a single *node*; **ReadWriteMany** (RWX) allows many nodes to mount it read-write simultaneously; **ReadOnlyMany** (ROX) allows many read-only; **ReadWriteOncePod** (RWOP) narrows RWO to a single *Pod*<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes">[7]</a></sup>. The word that trips people is "Once" meaning *one node*, not one Pod — two Pods on the *same* node can share an RWO volume; two Pods on *different* nodes cannot.
-
-That distinction is the module's third failure, and it's the one that looks the strangest because the claim is perfectly `Bound`. Take a Deployment with a single RWO PVC and scale it so two replicas land on two different nodes. The first Pod's node attaches the volume; the second Pod, on another node, asks for the same RWO volume and can't have it — the volume is already exclusively attached elsewhere. On a network block volume the error is literally `Multi-Attach error for volume ... Volume is already exclusively attached to one node`; on a node-local volume the same rule surfaces as `volume node affinity conflict`, because the local PV carries a hard node affinity to the node that holds it. Either way the second Pod is stuck — `Pending` or `ContainerCreating` — with a `Bound` claim, which is exactly the signature that separates this from the first two failures. RWO is not a bug here; it's the volume doing what it promised. The fix is to stop asking an RWO volume to span nodes: run a single node-bound consumer, or move to RWX (network file storage) if you genuinely need replicas on many nodes writing one volume.
-
-<details>
-<summary>📖 Going deeper: the CSI provisioning pipeline — what actually creates, attaches, and mounts<sup><a href="https://kubernetes.io/docs/concepts/storage/volumes/#csi">[4]</a></sup></summary>
-
-The **Container Storage Interface (CSI)** is the standard that lets storage vendors write one driver that any Kubernetes cluster can use, out-of-tree<sup><a href="https://kubernetes.io/docs/concepts/storage/volumes/#csi">[4]</a></sup>. A CSI driver ships as Pods, and the work splits across three logical operations. **CreateVolume** (dynamic provisioning) is driven by the `external-provisioner` sidecar watching for `Pending` PVCs that name the driver's class — it calls the driver to carve the real volume and creates the PV object. **ControllerPublishVolume** (attach) is driven by the `external-attacher` and the in-cluster attach/detach controller — it makes the volume available to a specific node, and it's the step that enforces RWO exclusivity. **NodeStageVolume / NodePublishVolume** (mount) run on the target node's kubelet via the driver's node plugin — they format if needed and bind-mount the volume into the container.
-
-Reading that pipeline turns opaque symptoms into locatable ones. A PVC stuck `Pending` on a real class (not a missing one) points at provisioning — the `external-provisioner` or the driver's `CreateVolume`. A `Bound` PVC whose Pod is stuck in `ContainerCreating` with attach or Multi-Attach errors points at the attach stage — the attach/detach controller. A Pod past attach but failing to start with a `FailedMount` points at the node plugin's mount step. `local-path` in this lab is deliberately simpler — a single provisioner Pod that makes a directory, no attach step — so its failures are all provisioning-side; a production CSI driver gives you the full pipeline, and knowing which stage owns a symptom is how you skip straight to the right logs.
+Force-removing a finalizer is the last resort, never the fix: Kubernetes forgets the object while the real disk survives, which turns a stuck delete into an orphan nobody tracks.
 
 </details>
 
 ## Hands-on
 
-Four steps in the baseline, three break/fix scenarios — all on the full Polyphone fleet, exercising the PVC-backed workloads it already runs (`cdr-writer`, `directory`, and the StatefulSets) with no new workloads. The class throughout is `local-path`, a dynamic `WaitForFirstConsumer`, RWO, `Delete`-policy provisioner.
+Five baseline steps and four break/fix scenarios on the full Polyphone fleet. The class throughout is `local-path`: dynamic, `WaitForFirstConsumer`, RWO, `Delete` policy.
 
-- **`baseline/`** — durable storage working end to end: a `Bound` PVC and the PV a StorageClass provisioned for it, the `WaitForFirstConsumer` binding behavior (including a deliberately Pending-but-healthy claim), data that survives a Pod delete, and the `get pvc` triage. What healthy looks like before the differential breaks it.
-- **`breakfix-01-pvc-storageclass-missing/`** — a PVC that never binds. Tests dynamic provisioning: the claim names a StorageClass that doesn't exist, so no PV is provisioned and the Pod hangs in `Pending`.
-- **`breakfix-02-pvc-claim-missing/`** — a Pod that names a claim that isn't there. Tests the Pod↔PVC link: `describe pod` says `persistentvolumeclaim "..." not found`, and `get pvc` shows the real claim is `Bound` and fine.
-- **`breakfix-03-rwo-multi-attach/`** — a `Bound` claim whose Pod is still stuck. Tests access modes: an RWO volume is asked to back replicas on two nodes, and the second can't attach it.
+- **`baseline/`** — volumes from the inside out: an `emptyDir` that dies with its Pod, a `Bound` claim and the volume a class provisioned for it, `WaitForFirstConsumer` holding a healthy claim `Pending`, data surviving a Pod delete, and the `get pvc` triage.
+- **`breakfix-01-pvc-storageclass-missing/`** — a claim that never binds, because it names a class that does not exist.
+- **`breakfix-02-pvc-claim-missing/`** — a Pod that names a claim which is absent.
+- **`breakfix-03-rwo-multi-attach/`** — a `Bound` claim whose second Pod sits on another node, and an RWO volume that will not follow it.
+- **`breakfix-04-rwop-single-pod/`** — the same shape on one node, where RWOP refuses a second Pod that RWO would have allowed.
 
-The three scenarios walk the storage diagram top to bottom — claim-absent → claim-Pending → claim-Bound-but-unattachable — so each isolates one hop and one `get pvc` signature. Check yourself against `ANSWER-KEY.md` after each.
+Check yourself against `ANSWER-KEY.md` after each.
 
 ## Common failure modes
 
 | Symptom | Likely cause | Where to look |
 |---------|--------------|---------------|
-| Pod `Pending`, `describe pod` says `unbound ... PersistentVolumeClaims` | The PVC it uses is `Pending` — can't bind | `kubectl get pvc -n <ns>`; then `describe pvc` for the reason |
-| PVC `Pending`, `describe pvc` says `storageclass ... not found` | `storageClassName` is a typo or an uninstalled class | `kubectl get storageclass`; fix the class name (delete+recreate — it's immutable) |
-| PVC `Pending`, `describe pvc` says `waiting for first consumer` | Healthy `WaitForFirstConsumer` — no bug | schedule a Pod that uses it; it binds on the Pod's node |
-| Pod `Pending`, `describe pod` says `persistentvolumeclaim "x" not found` | `claimName` typo, or claim is in another namespace | `kubectl get pvc -n <ns>`; correct the `claimName` |
-| Pod `Bound` PVC but stuck `ContainerCreating`, `Multi-Attach error` | RWO volume asked for on a second node | `kubectl get pods -o wide`; scale to one node-bound consumer, or use RWX |
-| Same, but `volume node affinity conflict` | RWO **local** volume; PV pinned to another node | `describe pv` node affinity vs the Pod's node; same fix as Multi-Attach |
-| Data gone after a `kubectl delete pvc` | `Delete` reclaim policy destroyed the PV | `kubectl get storageclass -o yaml` `reclaimPolicy`; use `Retain` for data that matters |
+| Pod `Pending`, `unbound ... PersistentVolumeClaims` | Its claim is `Pending` | `get pvc -n <ns>`, then `describe pvc` for the reason |
+| Claim `Pending`, `storageclass ... not found` | A typo in `storageClassName`, or the class is not installed | `get storageclass`; delete and recreate the claim, because the field is immutable |
+| Claim `Pending`, `waiting for first consumer` | Healthy `WaitForFirstConsumer`. No fault | Schedule a Pod that uses it; it binds on that Pod's node |
+| Pod `Pending`, `persistentvolumeclaim "x" not found` | A `claimName` typo, or the claim is in another namespace | `get pvc -n <ns>`; correct the `claimName` |
+| `Bound` claim, Pod stuck, `Multi-Attach error` | An RWO volume is wanted on a second node | `get pods -o wide`; run one consumer, or move to RWX |
+| Same shape, `volume node affinity conflict` | An RWO **local** volume pinned to another node | `describe pv` node affinity against the Pod's node |
+| Same shape, `... ReadWriteOncePod access mode` | RWOP already has its one Pod | Run one Pod, or recreate the claim as RWO |
+| `delete pvc` never finishes; claim `Terminating` | In-use protection: a Pod still references it | `get pods -n <ns>`; scale the consumer to zero |
+| A volume sits `Released`, no claim binds | The stale `claimRef` names the deleted claim | `get pv -o yaml`; clear `spec.claimRef` |
+| Growing a claim is rejected | The class omits `allowVolumeExpansion` | `get storageclass -o yaml` |
+| Data gone after `delete pvc` | A `Delete` reclaim policy destroyed the volume | `get storageclass -o yaml`; use `Retain` for data that matters |
 
 ## Recap
 
-- **A PVC is a request, a PV is the volume, a StorageClass provisions one from the other.** The Pod names only the claim; the indirection is what keeps the Pod disposable while its data persists. `get pvc` proves the claim's state; the Pod's own status doesn't.
-- **`kubectl get pvc` is the first look, and it splits every storage-stuck Pod three ways:** the claim is absent (Pod names a claim that doesn't exist), `Pending` (can't bind — bad class or no matching PV), or `Bound` but the Pod is still stuck (the volume can't attach where the Pod runs).
-- **Not all `Pending` is broken.** `WaitForFirstConsumer` deliberately holds a claim `Pending` until a Pod uses it, so the volume lands on the Pod's node. A claim is only broken if a Pod is trying to use it and it still won't bind.
-- **Access modes are about how many *nodes*, not Pods.** RWO is one node at a time; a shared RWO volume can't back replicas on two nodes — that's the Multi-Attach / node-affinity-conflict failure, always with a `Bound` claim. RWX is what spans nodes.
-- **`reclaimPolicy: Delete` makes `kubectl delete pvc` a data-destruction command.** Put anything you can't lose on `Retain`, and treat claim deletion as a change with blast radius, not routine cleanup.
+- **A volume is a directory the containers in a Pod can reach.** `.spec.volumes` provides it, `.spec.containers[*].volumeMounts` places it. Most types die with the Pod; only a claim reaches storage with its own lifecycle.
+- **A claim requests storage, a volume is the storage, and a StorageClass provisions one to satisfy the other.** The binding is exclusive and one-to-one, and a Pod names only the claim, in its own namespace.
+- **`kubectl get pvc` is the first look, and it splits every storage-stuck Pod three ways:** the claim is absent, `Pending`, or `Bound` while the Pod is still stuck. Not every `Pending` is broken — `WaitForFirstConsumer` holds a healthy claim there until a Pod consumes it.
+- **Access modes count nodes, except RWOP, which counts Pods.** RWO gives one node many Pods, RWX gives many nodes, RWOP gives exactly one Pod. A `Bound` claim with a stuck Pod is an exclusivity problem, never a provisioning one.
+- **`reclaimPolicy: Delete` makes `kubectl delete pvc` a data-destruction command.** In-use protection is the only thing that slows it down.
 
 ## Production thinking
 
-- A team scales a stateful Deployment from one replica to three for headroom, all sharing one RWO PVC. It works in their single-node test cluster and fails the moment it hits a multi-node one, with two replicas stuck `ContainerCreating`. What's the failure, and what should they have reached for instead of more replicas on RWO?
-- A cleanup script deletes "unused" PVCs in a namespace, and a service's data disappears. The StorageClass was on `reclaimPolicy: Delete`. What single StorageClass (or PV) change would have turned this from data loss into a recoverable `Released` volume, and what's the cost of that safety?
-- You standardize on `WaitForFirstConsumer` classes and a colleague files a bug: "half our PVCs are stuck `Pending` right after `kubectl apply`, before any Pods exist." Is this a real problem? What one question tells you whether a `Pending` claim is healthy or broken, without describing anything?
+- A team scales a stateful Deployment from one replica to three, all sharing one RWO claim. It works on their single-node test cluster and fails on a multi-node one. What is the failure, and what should they reach for instead of more replicas on RWO?
+- A cleanup script deletes "unused" claims, and a service's data disappears. The class was on `reclaimPolicy: Delete`. Which single change would have made that a recoverable `Released` volume, and what does the safety cost afterwards?
+- A volume is filling up and its class sets `allowVolumeExpansion: true`. You raise the request, the claim reports the new size, and the application still sees the old capacity. What has completed, what has not, and what do you do next?
 
 ## References
 
-1. Kubernetes — Persistent Volumes: https://kubernetes.io/docs/concepts/storage/persistent-volumes/
-2. Kubernetes — Storage Classes: https://kubernetes.io/docs/concepts/storage/storage-classes/
-3. Kubernetes — Dynamic Volume Provisioning: https://kubernetes.io/docs/concepts/storage/dynamic-provisioning/
-4. Kubernetes — Volumes (CSI): https://kubernetes.io/docs/concepts/storage/volumes/#csi
-5. Kubernetes — Volume Binding Mode (`WaitForFirstConsumer`): https://kubernetes.io/docs/concepts/storage/storage-classes/#volume-binding-mode
-6. Kubernetes — Reclaiming (reclaim policy, PV lifecycle): https://kubernetes.io/docs/concepts/storage/persistent-volumes/#reclaiming
-7. Kubernetes — Access Modes: https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes
-8. Kubernetes — Configure a Pod to Use a PersistentVolume: https://kubernetes.io/docs/tasks/configure-pod-container/configure-persistent-volume-storage/
+1. Kubernetes — Volumes: https://kubernetes.io/docs/concepts/storage/volumes/
+2. Kubernetes — Ephemeral Volumes: https://kubernetes.io/docs/concepts/storage/ephemeral-volumes/
+3. Kubernetes — Persistent Volumes: https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+4. Kubernetes — Dynamic Volume Provisioning: https://kubernetes.io/docs/concepts/storage/dynamic-provisioning/
+5. Kubernetes — Storage Classes: https://kubernetes.io/docs/concepts/storage/storage-classes/
+6. Kubernetes — Volume Binding Mode: https://kubernetes.io/docs/concepts/storage/storage-classes/#volume-binding-mode
+7. Kubernetes — Expanding Persistent Volume Claims: https://kubernetes.io/docs/concepts/storage/persistent-volumes/#expanding-persistent-volumes-claims
+8. Kubernetes — Volumes (CSI): https://kubernetes.io/docs/concepts/storage/volumes/#csi
+9. Kubernetes — Access Modes: https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes
+10. Kubernetes — PersistentVolume Phase: https://kubernetes.io/docs/concepts/storage/persistent-volumes/#phase
+11. Kubernetes — Storage Object in Use Protection: https://kubernetes.io/docs/concepts/storage/persistent-volumes/#storage-object-in-use-protection
+12. Kubernetes — Reclaiming: https://kubernetes.io/docs/concepts/storage/persistent-volumes/#reclaiming
+13. Kubernetes — Volume Snapshots: https://kubernetes.io/docs/concepts/storage/volume-snapshots/

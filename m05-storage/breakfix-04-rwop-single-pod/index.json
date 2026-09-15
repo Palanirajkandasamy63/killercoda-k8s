@@ -1,0 +1,19 @@
+{
+  "title": "M05 — Break/fix 04: RWOP Refuses a Second Pod",
+  "description": "cdr-writer runs 2 replicas on one node, and its claim is ReadWriteOncePod. The claim is Bound, one replica runs, and the scheduler refuses the other. Read the access mode, then restore an access mode the workload can actually use.",
+  "details": {
+    "intro": {
+      "text": "intro.md",
+      "background": "background.sh",
+      "foreground": "foreground.sh"
+    },
+    "steps": [
+      { "title": "Diagnose the refused second Pod", "text": "step1/text.md" },
+      { "title": "Fix it and verify", "text": "step2/text.md", "verify": "step2/verify.sh" }
+    ],
+    "finish": { "text": "finish.md" }
+  },
+  "backend": {
+    "imageid": "kubernetes-kubeadm-2nodes"
+  }
+}

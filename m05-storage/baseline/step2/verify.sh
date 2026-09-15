@@ -1,10 +1,11 @@
 #!/bin/bash
-# Checks: the local-path StorageClass exists and uses WaitForFirstConsumer, the
-# binding behavior the whole module leans on. Defensive baseline check.
-MODE=$(kubectl get storageclass local-path -o jsonpath='{.volumeBindingMode}' 2>/dev/null)
-if [ -z "$MODE" ]; then
-  echo "StorageClass local-path not found yet. The provisioner may still be installing — wait and retry." >&2
+# Checks: cdr-data PVC is Bound to a PV via the local-path class, so the learner
+# has a healthy claim to read. Defensive baseline check.
+STATUS=$(kubectl get pvc cdr-data -n cdr-storage -o jsonpath='{.status.phase}' 2>/dev/null)
+if [ "$STATUS" != "Bound" ]; then
+  echo "cdr-data is not Bound yet (status '$STATUS'). The fleet may still be coming up — wait and retry." >&2
   exit 1
 fi
-echo "✓ StorageClass local-path present (volumeBindingMode: $MODE)"
+VOL=$(kubectl get pvc cdr-data -n cdr-storage -o jsonpath='{.spec.volumeName}' 2>/dev/null)
+echo "✓ cdr-data is Bound to PV $VOL (via StorageClass local-path)"
 exit 0

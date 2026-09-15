@@ -1,6 +1,6 @@
 {
-  "title": "M05 — Break/fix 02: Pod Names a Claim That Isn't There",
-  "description": "directory is stuck Pending because it names a claim that doesn't exist. Read describe pod and get pvc to see the Pod points at a claimName that was never created, and repoint it at the claim that's actually there.",
+  "title": "M05 — Break/fix 02: A Pod Names a Claim That Is Not There",
+  "description": "directory is stuck Pending because it names a claim that does not exist. Read describe pod and get pvc to see the Pod pointing at a claimName that was never created, then repoint it at the claim that is there.",
   "details": {
     "intro": {
       "text": "intro.md",
