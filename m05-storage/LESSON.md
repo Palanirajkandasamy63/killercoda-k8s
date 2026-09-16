@@ -51,6 +51,23 @@ A Pod's storage travels a fixed chain, and a different object owns each hop. The
   'secondaryColor':'#3a3a3a', 'tertiaryColor':'#1f1f1f',
   'background':'#0f0f0f'
 }}}%%
+flowchart TB
+    SC[StorageClass<br/>the recipe] -->|provisions| PV[PersistentVolume<br/>the storage]
+    PV -->|binds: claimRef ↔ volumeName| PVC[PersistentVolumeClaim<br/>the request]
+    PVC -->|claimName| POD[Pod<br/>the consumer]
+```
+
+StorageClass and PersistentVolume are cluster-scoped; the claim is where the chain turns namespaced, the one durable handle a Pod spec ever names.
+
+The next diagram walks the same chain from the Pod's side, asking which link breaks first.
+
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': {
+  'primaryColor':'#2b2b2b', 'primaryTextColor':'#e6e6e6',
+  'primaryBorderColor':'#7a7a7a', 'lineColor':'#9a9a9a',
+  'secondaryColor':'#3a3a3a', 'tertiaryColor':'#1f1f1f',
+  'background':'#0f0f0f'
+}}}%%
 flowchart TD
     A[Pod names a claim] --> B{claim exists<br/>in the namespace?}
     B -->|no| E1[Pod Pending<br/>'claim not found']
@@ -92,13 +109,12 @@ Most volume types are **ephemeral**: their lifetime matches the Pod's, so deleti
 | `emptyDir` | the Pod | Scratch space, a cache, a directory two containers share. |
 | `configMap`, `secret`, `projected` | the Pod | Configuration and credentials, as files (M03). |
 | `downwardAPI` | the Pod | Pod fields, such as its name or labels, as files. |
-| `persistentVolumeClaim` | independent | Durable data. The rest of this module. |
+| `ephemeral` | the Pod | A **generic ephemeral volume**: data that only needs to exist during a Pod's lifecycle, sized and classed like a claim<sup><a href="https://kubernetes.io/docs/concepts/storage/ephemeral-volumes/">[2]</a></sup>. |
 | `hostPath` | the node | A path on the node's filesystem. Restricted in production. |
-| `local` | the node | A disk on one node, presented as a volume with node affinity. |
+| `local` | the node | A disk on one node, node-affine. Always through a PersistentVolumeClaim, never named directly in a Pod. |
+| `persistentVolumeClaim` | independent | Durable data. The rest of this module. |
 | `nfs` | independent | A network file share many nodes mount at once. |
 | `csi` | independent | Any storage a CSI driver provides. Every cloud volume. |
-
-One ephemeral form is worth naming: a **generic ephemeral volume** gives a Pod scratch space with a claim's feature set, then deletes it with the Pod<sup><a href="https://kubernetes.io/docs/concepts/storage/ephemeral-volumes/">[2]</a></sup>.
 
 ### The claim and the volume
 
@@ -170,6 +186,8 @@ A volume reports its place in that lifecycle as a phase<sup><a href="https://kub
 | `Bound` | The volume is bound to a claim. |
 | `Released` | The claim is deleted; the cluster has not yet reclaimed the storage. |
 | `Failed` | Automatic reclamation failed. |
+
+A claim's own phase is a simpler set: `Pending`, `Bound`, or rarely `Lost` if its bound volume disappears out from under it<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#phase">[10]</a></sup>.
 
 Deleting a claim is where storage gets dangerous, and two mechanisms decide the outcome. The first is **Storage Object in Use Protection**, which stops a claim a Pod is using, or a volume a claim is bound to, from being removed out from under live data<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#storage-object-in-use-protection">[11]</a></sup>. A claim counts as in use whenever a Pod references it. Delete such a claim and it stays: a `kubernetes.io/pvc-protection` finalizer holds it in `Terminating` until no Pod uses it, and a bound volume behaves the same way through its own finalizer. So `kubectl delete pvc` appears to hang, and nothing is wrong. Scale the consumer to zero and the deletion completes.
 
