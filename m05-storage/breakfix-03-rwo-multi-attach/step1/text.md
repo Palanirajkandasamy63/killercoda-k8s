@@ -28,6 +28,15 @@ In the Pending Pod's `Events:` block, the `FailedScheduling` message names it:
 ... node(s) had volume node affinity conflict ...
 ```
 
+Events expire after about an hour, and the scheduler does not retry an already-unschedulable Pod until the cluster changes. If `Events:` is empty, force a fresh attempt:
+
+```bash
+kubectl delete pod -n app-services $(kubectl get pods -n app-services -l app=directory --field-selector=status.phase=Pending -o jsonpath='{.items[0].metadata.name}')
+kubectl describe pod -n app-services -l app=directory
+```{{exec}}
+
+The ReplicaSet recreates the Pod immediately and the event reappears.
+
 `directory-data` is ReadWriteOnce and lives on one node. The stuck replica was pushed to a *different* node, because a scheduling rule forces the two replicas apart (anti-affinity mechanics are M06). An RWO volume cannot be attached on a second node.
 
 ## See where the volume is pinned
