@@ -18,26 +18,19 @@ kubectl get pvc -n app-services
 
 ## Read why the stuck replica will not schedule
 
-```bash
-kubectl describe pod -n app-services -l app=directory
-```{{exec}}
-
-In the Pending Pod's `Events:` block, the `FailedScheduling` message names it:
-
-```
-... node(s) had volume node affinity conflict ...
-```
-
-Events expire after about an hour, and the scheduler does not retry an already-unschedulable Pod until the cluster changes. If `Events:` is empty, force a fresh attempt:
+`-l app=directory` matches both replicas, and its `Events:` block belongs to whichever Pod `describe` prints — not necessarily the stuck one. Name the Pending replica directly:
 
 ```bash
-kubectl delete pod -n app-services $(kubectl get pods -n app-services -l app=directory --field-selector=status.phase=Pending -o jsonpath='{.items[0].metadata.name}')
-kubectl describe pod -n app-services -l app=directory
+kubectl describe pod -n app-services $(kubectl get pods -n app-services -l app=directory --field-selector=status.phase=Pending -o jsonpath='{.items[0].metadata.name}')
 ```{{exec}}
 
-The ReplicaSet recreates the Pod immediately and the event reappears.
+The `FailedScheduling` message names it:
 
-`directory-data` is ReadWriteOnce and lives on one node. The stuck replica was pushed to a *different* node, because a scheduling rule forces the two replicas apart (anti-affinity mechanics are M06). An RWO volume cannot be attached on a second node.
+```
+0/2 nodes are available: 1 node(s) didn't match PersistentVolume's node affinity, 1 node(s) didn't match pod anti-affinity rules.
+```
+
+Two nodes, two different disqualifying reasons: one node fails because the other replica already sits there (anti-affinity, mechanics are M06), the other fails because it is not the node `directory-data` is pinned to. The second clause is the one this scenario is about — `directory-data` is ReadWriteOnce, and an RWO volume cannot be attached on a second node.
 
 ## See where the volume is pinned
 

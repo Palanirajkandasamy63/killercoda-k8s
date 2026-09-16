@@ -27,26 +27,19 @@ Read `Node Affinity:` and compare it with the `NODE` column above. The volume is
 
 ## Read what the scheduler actually says
 
+`-l app=cdr-writer` matches both replicas, and its `Events:` block belongs to whichever Pod `describe` prints — not necessarily the stuck one. Name the Pending replica directly:
+
 ```bash
-kubectl describe pod -n cdr-storage -l app=cdr-writer
+kubectl describe pod -n cdr-storage $(kubectl get pods -n cdr-storage -l app=cdr-writer --field-selector=status.phase=Pending -o jsonpath='{.items[0].metadata.name}')
 ```{{exec}}
 
-Scroll to the `Events:` block of the Pending Pod. The `FailedScheduling` message names the cause outright:
+The `FailedScheduling` message names the cause outright:
 
 ```
 node has pod using PersistentVolumeClaim with the same name and ReadWriteOncePod access mode
 ```
 
 (The same message also lists the control-plane taint for the other node — that line is background noise here, not the fault.)
-
-Events expire after about an hour, and the scheduler does not retry an already-unschedulable Pod until the cluster changes. If `Events:` is empty, force a fresh attempt:
-
-```bash
-kubectl delete pod -n cdr-storage $(kubectl get pods -n cdr-storage -l app=cdr-writer --field-selector=status.phase=Pending -o jsonpath='{.items[0].metadata.name}')
-kubectl describe pod -n cdr-storage -l app=cdr-writer
-```{{exec}}
-
-The ReplicaSet recreates the Pod immediately and the event reappears.
 
 ## Confirm the access mode
 

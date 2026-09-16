@@ -1,6 +1,6 @@
 # Done
 
-`directory` had a Bound claim and a Pod that still would not start — the third leaf, and the one that trips people, because `get pvc` looks perfect. A single `ReadWriteOnce` volume was asked to back two replicas on two nodes, and RWO means one node at a time. The second replica hit a `volume node affinity conflict`, which is the local-volume form of a Multi-Attach error. The fix was to stop spanning nodes.
+`directory` had a Bound claim and a Pod that still would not start — the third leaf, and the one that trips people, because `get pvc` looks perfect. A single `ReadWriteOnce` volume was asked to back two replicas on two nodes, and RWO means one node at a time. The scheduler refused the second replica with `didn't match PersistentVolume's node affinity`, which is the local-volume form of a Multi-Attach error. The fix was to stop spanning nodes.
 
 That leaf has a second form, narrower than this one. `ReadWriteOnce` counts nodes, so two Pods on *one* node share the volume happily. `ReadWriteOncePod` counts Pods, and refuses the second Pod anywhere. Break/fix 04 is that case.
 

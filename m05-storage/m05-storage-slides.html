@@ -497,7 +497,7 @@ cdr-data   <span class="g">Bound</span>     pvc-9f2a  1Gi        RWO            
           </ul>
           <div class="sigs">
             <div class="sig"><span class="lbl">block volume</span><span class="val"><code>Multi-Attach error</code></span></div>
-            <div class="sig"><span class="lbl">local volume</span><span class="val"><code>volume node affinity conflict</code></span></div>
+            <div class="sig"><span class="lbl">local volume</span><span class="val"><code>didn't match PersistentVolume's node affinity</code></span></div>
           </div>
         </div>
         <div class="card bad">
@@ -567,7 +567,7 @@ cdr-data   <span class="g">Bound</span>     pvc-9f2a  1Gi        RWO            
         <tr><td>Claim <code>Pending</code>, <code>waiting for first consumer</code></td><td>healthy <code>WaitForFirstConsumer</code></td><td class="muted">schedule a Pod that uses it</td></tr>
         <tr><td>Pod <code>Pending</code>, <code>persistentvolumeclaim "x" not found</code></td><td><code>claimName</code> typo, or another namespace</td><td class="muted"><code>get pvc -n &lt;ns&gt;</code>; correct the name</td></tr>
         <tr><td><code>Bound</code> claim, Pod stuck, <code>Multi-Attach error</code></td><td>an RWO volume wanted on a second node</td><td class="muted"><code>get pods -o wide</code>; one consumer, or RWX</td></tr>
-        <tr><td>same shape, <code>volume node affinity conflict</code></td><td>an RWO local volume pinned elsewhere</td><td class="muted"><code>describe pv</code> node affinity</td></tr>
+        <tr><td>same shape, <code>didn't match PersistentVolume's node affinity</code></td><td>an RWO local volume pinned elsewhere</td><td class="muted"><code>describe pv</code> node affinity</td></tr>
         <tr><td>same shape, <code>... ReadWriteOncePod access mode</code></td><td>RWOP already has its one Pod</td><td class="muted">one Pod, or recreate the claim as RWO</td></tr>
         <tr><td><code>delete pvc</code> never finishes, claim <code>Terminating</code></td><td>in-use protection: a Pod still references it</td><td class="muted"><code>get pods -n &lt;ns&gt;</code>; scale the consumer to zero</td></tr>
         <tr><td>a volume sits <code>Released</code>, no claim binds</td><td>the stale <code>claimRef</code> names the old claim</td><td class="muted"><code>get pv -o yaml</code>; clear <code>spec.claimRef</code></td></tr>

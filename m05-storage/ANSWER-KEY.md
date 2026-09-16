@@ -146,7 +146,7 @@ kubectl get pvc -n app-services                # directory-data now Bound
 
 **Symptom:** `directory` in `app-services` was scaled to 2 replicas. One is Running, the other will not schedule. `kubectl get pvc` shows `directory-data` Bound, so the storage exists and bound cleanly, and a Pod still cannot start.
 
-**Root cause:** `directory-data` is `ReadWriteOnce`, which permits read-write mounting by a single node<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes">[3]</a></sup>. The two replicas were forced onto different nodes. The first attached the volume on its node, and the second cannot attach the same volume from another node. Because this is a node-local volume, the conflict surfaces as `volume node affinity conflict` — the volume carries hard node affinity. On a cloud block volume the identical rule reads `Multi-Attach error for volume ... already exclusively attached to one node`. A Bound claim with a stuck Pod is the signature of exclusivity, not binding.
+**Root cause:** `directory-data` is `ReadWriteOnce`, which permits read-write mounting by a single node<sup><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes">[3]</a></sup>. The two replicas were forced onto different nodes. The first attached the volume on its node, and the second cannot attach the same volume from another node. Because this is a node-local volume, the conflict surfaces as `didn't match PersistentVolume's node affinity` — the volume carries hard node affinity. On a cloud block volume the identical rule reads `Multi-Attach error for volume ... already exclusively attached to one node`. A Bound claim with a stuck Pod is the signature of exclusivity, not binding.
 
 **Diagnostic commands (the canonical path):**
 
@@ -158,9 +158,9 @@ kubectl get pods -n app-services -l app=directory -o wide
 kubectl get pvc -n app-services
 #    directory-data   Bound
 
-# 3. Read the scheduling failure
-kubectl describe pod -n app-services -l app=directory
-#    Events: ... node(s) had volume node affinity conflict ...
+# 3. Read the scheduling failure — name the Pending replica, since -l matches both
+kubectl describe pod -n app-services $(kubectl get pods -n app-services -l app=directory --field-selector=status.phase=Pending -o jsonpath='{.items[0].metadata.name}')
+#    Events: ... node(s) didn't match PersistentVolume's node affinity ...
 
 # 4. See where the volume is pinned
 PV=$(kubectl get pvc directory-data -n app-services -o jsonpath='{.spec.volumeName}')
@@ -186,7 +186,7 @@ kubectl get pods -n app-services -l app=directory -o wide     # one Running/Read
 **What this scenario tests:** The access modes, and reading the Bound-but-stuck signature as exclusivity. Self-grading questions:
 
 - Did the Bound claim stop you chasing a provisioning bug that was not there, and send you to the access mode?
-- Did you read `ReadWriteOnce` as one *node*, and recognize `volume node affinity conflict` and `Multi-Attach` as the same rule?
+- Did you read `ReadWriteOnce` as one *node*, and recognize `didn't match PersistentVolume's node affinity` and `Multi-Attach` as the same rule?
 - Did you land on a single node-bound consumer, or a genuine RWX or `volumeClaimTemplates` design, rather than deleting the stuck Pod and watching it return?
 
 **Expected time:** 4–8 min; 10–15 the first time. Lost time goes to re-checking the Bound claim and restarting the healthy replica.
@@ -216,8 +216,8 @@ PV=$(kubectl get pvc cdr-data -n cdr-storage -o jsonpath='{.spec.volumeName}')
 kubectl describe pv "$PV"
 #    Node Affinity: the node running the healthy replica
 
-# 4. Read the scheduler's own words
-kubectl describe pod -n cdr-storage -l app=cdr-writer
+# 4. Read the scheduler's own words — name the Pending replica, since -l matches both
+kubectl describe pod -n cdr-storage $(kubectl get pods -n cdr-storage -l app=cdr-writer --field-selector=status.phase=Pending -o jsonpath='{.items[0].metadata.name}')
 #    Events: node has pod using PersistentVolumeClaim with the same name and
 #            ReadWriteOncePod access mode
 

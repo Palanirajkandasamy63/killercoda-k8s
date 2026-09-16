@@ -363,7 +363,7 @@ EOF
 #     the two replicas onto different nodes, and a control-plane toleration lets one
 #     land there. The first replica attaches the RWO volume on its node; the second,
 #     on the other node, cannot attach the same RWO volume and stays Pending with a
-#     "volume node affinity conflict" (the local-volume form of a Multi-Attach error).
+#     "didn't match PersistentVolume's node affinity" (the local-volume form of a Multi-Attach error).
 #     The PVC is BOUND the whole time — the failure is at attach, not binding. Fix =
 #     stop asking an RWO volume to span nodes: scale back to 1 (RWX would be needed
 #     to place replicas on many nodes writing one volume).
