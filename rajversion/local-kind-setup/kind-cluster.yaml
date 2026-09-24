@@ -1,0 +1,9 @@
+# 2-node kind cluster matching the lab's assumed topology:
+# 1 control-plane + 1 worker (background.sh scripts label the worker
+# `disktype=ssd` and explicitly avoid the control-plane node).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: polyphone-lab
+nodes:
+  - role: control-plane
+  - role: worker
